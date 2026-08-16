@@ -32,6 +32,7 @@ import {
   providerEventFixture,
   providerHumanAnswerEventFixture,
   projectionUpdatedPayloadFixture,
+  projectCapabilityDirectoryFixture,
   remoteSessionProjectionFixture,
   restRequestFixture,
   taskFixture,
@@ -138,6 +139,72 @@ describe('canonical pairing and bidirectional Session commands', () => {
     expect(restResponseSchema.safeParse(agentOwnerTransferredResponseFixture).success).toBe(true)
     const sanitized = JSON.stringify(redactCredentials(agentOwnerTransferredResponseFixture))
     expect(sanitized).not.toContain(['INVALID', 'TEST', 'ONLY'].join('_'))
+  })
+
+  it('exposes one strict canonical ResourceRef command path', () => {
+    const create = {
+      protocolVersion: '1.0',
+      requestId: TEST_IDS.requestId,
+      type: 'resource.create',
+      idempotencyKey: 'idem_resource_create_0001',
+      projectId: TEST_IDS.projectId,
+      taskId: TEST_IDS.taskId,
+      expectedTaskRevision: 1,
+      provider: 'example-content',
+      externalId: 'document-42',
+      kind: 'shared_document',
+      name: '模型分析记录',
+      openUrl: 'https://content.example.invalid/resources/document-42',
+      version: '1'
+    }
+    expect(restRequestSchema.safeParse(create).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...create, taskId: undefined, expectedTaskRevision: undefined }).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...create, expectedTaskRevision: undefined }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...create, taskId: undefined }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...create, body: 'document body' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...create, openUrl: 'file:///private/document' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...create, name: 'token=test-only-token' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...create,
+      openUrl: 'https://content.example.invalid/resource?%73%69%67=test-only' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({
+      protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'resource.get',
+      resourceRefId: TEST_IDS.resourceRefId
+    }).success).toBe(true)
+    expect(restRequestSchema.safeParse({
+      protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'resource.invalidate',
+      idempotencyKey: 'idem_resource_invalidate_0001', resourceRefId: TEST_IDS.resourceRefId,
+      expectedRevision: 1
+    }).success).toBe(true)
+  })
+
+  it('exposes strict capability-directory and monotonic-progress command shapes', () => {
+    const directory = {
+      protocolVersion: '1.0', requestId: TEST_IDS.requestId,
+      type: 'project.capability_directory.get', projectId: TEST_IDS.projectId
+    }
+    expect(restRequestSchema.safeParse(directory).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...directory, includeCredentials: true }).success).toBe(false)
+    const progress = {
+      protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'task.progress.report',
+      idempotencyKey: 'idem_task_progress_report_01', taskId: TEST_IDS.taskId,
+      expectedRevision: 2, percent: 40, summary: '输入校验完成。'
+    }
+    expect(restRequestSchema.safeParse(progress).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...progress, percent: 101 }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...progress, summary: 'x'.repeat(2_001) }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...progress, localPath: '/private/data' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...progress, resultSummary: 'not progress' }).success).toBe(false)
+    expect(restResponseSchema.safeParse({ protocolVersion: '1.0', requestId: TEST_IDS.requestId,
+      type: 'rest.entity', entity: projectCapabilityDirectoryFixture }).success).toBe(true)
+    const transition = {
+      protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'task.transition',
+      idempotencyKey: 'idem_task_terminal_contract_01', taskId: TEST_IDS.taskId, expectedRevision: 3
+    }
+    expect(restRequestSchema.safeParse({ ...transition, status: 'succeeded' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...transition, status: 'succeeded', resultSummary: 'Bounded result.' }).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...transition, status: 'failed' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...transition, status: 'failed', safeFailureCode: 'input_invalid' }).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...transition, status: 'rejected', safeFailureCode: 'not_applicable' }).success).toBe(false)
   })
 })
 

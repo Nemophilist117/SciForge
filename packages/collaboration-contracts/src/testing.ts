@@ -8,7 +8,9 @@ import {
   humanNeededSchema,
   participantProfileSchema,
   projectInputSchema,
+  projectCapabilityDirectorySchema,
   projectRecordSchema,
+  resourceRefSchema,
   projectSchema,
   remoteSessionProjectionSchema,
   taskSchema,
@@ -43,6 +45,7 @@ export const TEST_IDS = Object.freeze({
   projectId: 'prj_Proj00000001',
   taskId: 'tsk_Task00000001',
   projectRecordId: 'rec_Rec000000001',
+  resourceRefId: 'rrf_ResRef000001',
   inboxMessageId: 'ibx_Inbox0000001',
   receiptId: 'rcp_Receip000001',
   humanRequestId: 'hrq_Human0000001',
@@ -198,6 +201,23 @@ export const projectFixture = projectSchema.parse({
   updatedAt: TEST_TIMESTAMP
 })
 
+export const projectCapabilityDirectoryFixture = projectCapabilityDirectorySchema.parse({
+  schemaVersion: 1,
+  type: 'project_capability_directory',
+  projectId: TEST_IDS.projectId,
+  projectRevision: 1,
+  agents: [{
+    agentId: TEST_IDS.agentId,
+    ownerUserId: TEST_IDS.userId,
+    displayName: '协调节点',
+    nodeType: 'desktop',
+    capabilities: ['research.coordinate'],
+    connectionStatus: 'online',
+    lastSeenAt: TEST_LATER_TIMESTAMP,
+    revision: 1
+  }]
+})
+
 export const taskFixture = taskSchema.parse({
   schemaVersion: 1,
   type: 'task',
@@ -232,6 +252,28 @@ export const projectRecordFixture = projectRecordSchema.parse({
   acceptedByUserId: null,
   acceptedByAgentId: null,
   acceptedAt: null,
+  revision: 1,
+  createdAt: TEST_TIMESTAMP,
+  updatedAt: TEST_TIMESTAMP
+})
+
+export const resourceRefFixture = resourceRefSchema.parse({
+  schemaVersion: 1,
+  type: 'resource_ref',
+  resourceRefId: TEST_IDS.resourceRefId,
+  projectId: TEST_IDS.projectId,
+  taskId: TEST_IDS.taskId,
+  taskRevision: 1,
+  createdByUserId: TEST_IDS.userId,
+  createdByAgentId: TEST_IDS.agentId,
+  provider: 'example-content',
+  externalId: 'document-42',
+  kind: 'shared_document',
+  name: '模型分析记录',
+  openUrl: 'https://content.example.invalid/resources/document-42',
+  version: '1',
+  status: 'available',
+  invalidatedAt: null,
   revision: 1,
   createdAt: TEST_TIMESTAMP,
   updatedAt: TEST_TIMESTAMP
@@ -404,8 +446,10 @@ export const collaborationFixtures = Object.freeze({
   remoteSessionProjection: remoteSessionProjectionFixture,
   projectInput: projectInputFixture,
   project: projectFixture,
+  projectCapabilityDirectory: projectCapabilityDirectoryFixture,
   task: taskFixture,
   projectRecord: projectRecordFixture,
+  resourceRef: resourceRefFixture,
   humanNeeded: humanNeededFixture,
   humanAnswer: humanAnswerFixture,
   providerEvent: providerEventFixture,

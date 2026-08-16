@@ -16,6 +16,7 @@ import type {
   StoredProjectInput,
   StoredProjectMember,
   StoredProjectRecord,
+  StoredResourceRef,
   StoredProjection,
   StoredReceipt,
   StoredTask,
@@ -148,12 +149,14 @@ export class PostgresCollaborationRepository implements CollaborationRepository 
   }
   listProjectMembers(projectId: string): Promise<StoredProjectMember[]> { return this.read().listProjectMembers(projectId) }
   countProjectTasks(projectId: string, round?: number): Promise<number> { return this.read().countProjectTasks(projectId, round) }
+  countOpenProjectTasks(projectId: string): Promise<number> { return this.read().countOpenProjectTasks(projectId) }
   listOpenTasksForAgent(agentId: string): Promise<StoredTask[]> { return this.read().listOpenTasksForAgent(agentId) }
   getTask(taskId: string): Promise<StoredTask | null> { return this.read().getTask(taskId) }
   getProjectRecord(id: string): Promise<StoredProjectRecord | null> { return this.read().getProjectRecord(id) }
   listProjectRecords(projectId: string, acceptedOnly: boolean): Promise<StoredProjectRecord[]> {
     return this.read().listProjectRecords(projectId, acceptedOnly)
   }
+  getResourceRef(id: string): Promise<StoredResourceRef | null> { return this.read().getResourceRef(id) }
   getCredentialByDigest(digest: string): Promise<StoredCredential | null> { return this.read().getCredentialByDigest(digest) }
   getReceipt(actorKey: string, key: string): Promise<StoredReceipt | null> { return this.read().getReceipt(actorKey, key) }
   getReceiptById(receiptId: string): Promise<StoredReceipt | null> { return this.read().getReceiptById(receiptId) }
@@ -308,6 +311,15 @@ class PostgresReadRepository implements CollaborationReadRepository {
     return number(result.rows[0]?.count)
   }
 
+  async countOpenProjectTasks(projectId: string): Promise<number> {
+    const result = await this.sql.query<{ count: unknown }>(
+      `SELECT count(*) AS count FROM sciforge_collaboration.tasks
+       WHERE project_id = $1 AND status IN ('offered','accepted','in_progress','needs_human')`,
+      [projectId]
+    )
+    return number(result.rows[0]?.count)
+  }
+
   async getTask(taskId: string): Promise<StoredTask | null> {
     const result = await this.sql.query(`SELECT * FROM sciforge_collaboration.tasks WHERE task_id = $1`, [taskId])
     return result.rows[0] ? mapTask(result.rows[0]) : null
@@ -336,6 +348,14 @@ class PostgresReadRepository implements CollaborationReadRepository {
       [projectId, acceptedOnly]
     )
     return result.rows.map(mapRecord)
+  }
+
+  async getResourceRef(resourceRefId: string): Promise<StoredResourceRef | null> {
+    const result = await this.sql.query(
+      `SELECT * FROM sciforge_collaboration.resource_refs WHERE resource_ref_id = $1`,
+      [resourceRefId]
+    )
+    return result.rows[0] ? mapResourceRef(result.rows[0]) : null
   }
 
   async getCredentialByDigest(tokenDigest: string): Promise<StoredCredential | null> {
@@ -390,6 +410,22 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
     // unambiguously without introducing a byte that the wire protocol rejects.
     const lockScope = JSON.stringify([actorKey, idempotencyKey])
     await this.sql.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [lockScope])
+  }
+
+  async getProjectForUpdate(projectId: string): Promise<StoredProject | null> {
+    const result = await this.sql.query(
+      `SELECT * FROM sciforge_collaboration.projects WHERE project_id = $1 FOR UPDATE`,
+      [projectId]
+    )
+    return result.rows[0] ? mapProject(result.rows[0]) : null
+  }
+
+  async getTaskForUpdate(taskId: string): Promise<StoredTask | null> {
+    const result = await this.sql.query(
+      `SELECT * FROM sciforge_collaboration.tasks WHERE task_id = $1 FOR UPDATE`,
+      [taskId]
+    )
+    return result.rows[0] ? mapTask(result.rows[0]) : null
   }
 
   async insertUser(user: StoredUser): Promise<void> {
@@ -692,12 +728,14 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
     await this.sql.query(
       `INSERT INTO sciforge_collaboration.tasks
        (task_id,project_id,assignee_agent_id,created_by_agent_id,title,objective,completion_criteria,dependency_task_ids,status,retry_count,
-        max_retries,coordination_round,active_turn_id,result_summary,failure_summary,revision,created_at,updated_at,completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        max_retries,coordination_round,active_turn_id,progress_percent,progress_summary,progress_reported_at,result_summary,
+        safe_failure_code,revision,created_at,updated_at,completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [task.taskId, task.projectId, task.assigneeAgentId, task.createdByAgentId, task.title, task.objective,
         JSON.stringify(task.completionCriteria), JSON.stringify(task.dependencyTaskIds), task.status, task.retryCount,
-        task.maxRetries, task.coordinationRound, task.activeTurnId ?? null, task.resultSummary ?? null,
-        task.failureSummary ?? null, task.revision, task.createdAt, task.updatedAt, task.completedAt ?? null]
+        task.maxRetries, task.coordinationRound, task.activeTurnId ?? null, task.progress?.percent ?? null,
+        task.progress?.summary ?? null, task.progress?.reportedAt ?? null, task.resultSummary ?? null,
+        task.safeFailureCode ?? null, task.revision, task.createdAt, task.updatedAt, task.completedAt ?? null]
     )
   }
 
@@ -705,11 +743,13 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
     const result = await this.sql.query(
       `UPDATE sciforge_collaboration.tasks
        SET assignee_agent_id=$2,title=$3,objective=$4,completion_criteria=$5::jsonb,dependency_task_ids=$6::jsonb,status=$7,retry_count=$8,
-           max_retries=$9,coordination_round=$10,active_turn_id=$11,result_summary=$12,failure_summary=$13,revision=$14,updated_at=$15,completed_at=$16
-       WHERE task_id=$1 AND revision=$17`,
+           max_retries=$9,coordination_round=$10,active_turn_id=$11,progress_percent=$12,progress_summary=$13,
+           progress_reported_at=$14,result_summary=$15,safe_failure_code=$16,revision=$17,updated_at=$18,completed_at=$19
+       WHERE task_id=$1 AND revision=$20`,
       [task.taskId, task.assigneeAgentId, task.title, task.objective, JSON.stringify(task.completionCriteria),
         JSON.stringify(task.dependencyTaskIds), task.status, task.retryCount, task.maxRetries, task.coordinationRound,
-        task.activeTurnId ?? null, task.resultSummary ?? null, task.failureSummary ?? null, task.revision,
+        task.activeTurnId ?? null, task.progress?.percent ?? null, task.progress?.summary ?? null,
+        task.progress?.reportedAt ?? null, task.resultSummary ?? null, task.safeFailureCode ?? null, task.revision,
         task.updatedAt, task.completedAt ?? null, expectedRevision]
     )
     expectRevision(result.rowCount)
@@ -735,6 +775,30 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
        WHERE project_record_id=$1 AND revision=$10`,
       [record.projectRecordId, record.kind, record.status, record.summary, record.acceptedByUserId ?? null,
         record.acceptedByAgentId ?? null, record.acceptedAt ?? null, record.revision, record.updatedAt, expectedRevision]
+    )
+    expectRevision(result.rowCount)
+  }
+
+  async insertResourceRef(resource: StoredResourceRef): Promise<void> {
+    await this.sql.query(
+      `INSERT INTO sciforge_collaboration.resource_refs
+       (resource_ref_id,project_id,task_id,task_revision,created_by_user_id,created_by_agent_id,provider,external_id,
+        kind,name,open_url,provider_version,status,invalidated_at,revision,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [resource.resourceRefId, resource.projectId, resource.taskId ?? null, resource.taskRevision ?? null,
+        resource.createdByUserId, resource.createdByAgentId ?? null, resource.provider, resource.externalId,
+        resource.kind, resource.name, resource.openUrl, resource.version ?? null, resource.status,
+        resource.invalidatedAt ?? null, resource.revision, resource.createdAt, resource.updatedAt]
+    )
+  }
+
+  async updateResourceRef(resource: StoredResourceRef, expectedRevision: number): Promise<void> {
+    const result = await this.sql.query(
+      `UPDATE sciforge_collaboration.resource_refs
+       SET status=$2,invalidated_at=$3,revision=$4,updated_at=$5
+       WHERE resource_ref_id=$1 AND revision=$6`,
+      [resource.resourceRefId, resource.status, resource.invalidatedAt ?? null, resource.revision,
+        resource.updatedAt, expectedRevision]
     )
     expectRevision(result.rowCount)
   }
@@ -814,8 +878,28 @@ function translateDatabaseError(error: unknown): unknown {
   if (candidate?.code === '23503') {
     return new CollaborationServiceError('validation_failed', 'A referenced collaboration resource does not exist.')
   }
+  if (
+    candidate?.code === '23514' &&
+    typeof candidate.constraint === 'string' &&
+    RESOURCE_REF_VALIDATION_CONSTRAINTS.has(candidate.constraint)
+  ) {
+    return new CollaborationServiceError('validation_failed', 'ResourceRef metadata failed a storage safety constraint.')
+  }
   return error
 }
+
+const RESOURCE_REF_VALIDATION_CONSTRAINTS = new Set([
+  'resource_refs_provider_format',
+  'resource_refs_external_id_safe',
+  'resource_refs_kind_format',
+  'resource_refs_name_safe',
+  'resource_refs_open_url_safe',
+  'resource_refs_provider_version_safe',
+  'resource_refs_status_valid',
+  'resource_refs_revision_valid',
+  'resource_refs_provenance_complete',
+  'resource_refs_status_timestamp_consistent'
+])
 
 function string(row: SqlRow, key: string): string { return String(row[key]) }
 function optionalString(row: SqlRow, key: string): string | undefined { return row[key] == null ? undefined : String(row[key]) }
@@ -881,7 +965,9 @@ function mapTask(row: SqlRow): StoredTask {
     completionCriteria: jsonStrings(row.completion_criteria), dependencyTaskIds: jsonStrings(row.dependency_task_ids),
     status: string(row, 'status') as StoredTask['status'], retryCount: number(row.retry_count), maxRetries: number(row.max_retries),
     coordinationRound: number(row.coordination_round), activeTurnId: optionalString(row, 'active_turn_id'),
-    resultSummary: optionalString(row, 'result_summary'), failureSummary: optionalString(row, 'failure_summary'), revision: number(row.revision),
+    ...(row.progress_percent == null ? {} : { progress: { percent: number(row.progress_percent),
+      summary: string(row, 'progress_summary'), reportedAt: iso(row.progress_reported_at) } }),
+    resultSummary: optionalString(row, 'result_summary'), safeFailureCode: optionalString(row, 'safe_failure_code'), revision: number(row.revision),
     createdAt: iso(row.created_at), updatedAt: iso(row.updated_at), completedAt: optionalIso(row.completed_at) }
 }
 function mapRecord(row: SqlRow): StoredProjectRecord {
@@ -891,6 +977,27 @@ function mapRecord(row: SqlRow): StoredProjectRecord {
     sourceTaskId: optionalString(row, 'source_task_id'), sourceRevision: row.source_revision == null ? undefined : number(row.source_revision),
     acceptedByUserId: optionalString(row, 'accepted_by_user_id'), acceptedByAgentId: optionalString(row, 'accepted_by_agent_id'),
     acceptedAt: optionalIso(row.accepted_at), revision: number(row.revision), createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) }
+}
+function mapResourceRef(row: SqlRow): StoredResourceRef {
+  return {
+    resourceRefId: string(row, 'resource_ref_id'),
+    projectId: string(row, 'project_id'),
+    ...(row.task_id == null ? {} : { taskId: string(row, 'task_id') }),
+    ...(row.task_revision == null ? {} : { taskRevision: number(row.task_revision) }),
+    createdByUserId: string(row, 'created_by_user_id'),
+    ...(row.created_by_agent_id == null ? {} : { createdByAgentId: string(row, 'created_by_agent_id') }),
+    provider: string(row, 'provider'),
+    externalId: string(row, 'external_id'),
+    kind: string(row, 'kind'),
+    name: string(row, 'name'),
+    openUrl: string(row, 'open_url'),
+    version: optionalString(row, 'provider_version'),
+    status: string(row, 'status') as StoredResourceRef['status'],
+    ...(row.invalidated_at == null ? {} : { invalidatedAt: iso(row.invalidated_at) }),
+    revision: number(row.revision),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at)
+  }
 }
 function mapProjection(row: SqlRow): StoredProjection {
   return { projectionId: string(row, 'projection_id'), ownerUserId: string(row, 'owner_user_id'), agentId: string(row, 'agent_id'),

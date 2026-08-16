@@ -1,0 +1,121 @@
+name: sciforge-collaboration-private
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${SCIFORGE_COLLAB_LOG_MAX_SIZE:-10m}
+    max-file: ${SCIFORGE_COLLAB_LOG_MAX_FILES:-5}
+
+x-runtime-environment: &runtime-environment
+  SCIFORGE_COLLABORATION_DATABASE_URL: postgresql://sciforge_collab:${SCIFORGE_COLLAB_DB_PASSWORD:?set SCIFORGE_COLLAB_DB_PASSWORD}@postgres:5432/sciforge_collaboration
+  SCIFORGE_COLLABORATION_DATABASE_POOL_SIZE: "10"
+  SCIFORGE_COLLABORATION_LISTEN_HOST: 0.0.0.0
+  SCIFORGE_COLLABORATION_LISTEN_PORT: "8787"
+  SCIFORGE_COLLABORATION_BASE_PATH: ""
+  SCIFORGE_COLLABORATION_ALLOWED_ORIGINS: ""
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sciforge_collaboration
+      POSTGRES_USER: sciforge_admin
+      POSTGRES_PASSWORD: ${SCIFORGE_COLLAB_DB_ADMIN_PASSWORD:?set SCIFORGE_COLLAB_DB_ADMIN_PASSWORD}
+      SCIFORGE_COLLAB_DB_PASSWORD: ${SCIFORGE_COLLAB_DB_PASSWORD:?set SCIFORGE_COLLAB_DB_PASSWORD}
+    volumes:
+      - collaboration-db:/var/lib/postgresql/data
+      - ./postgres-init/001-create-application-role.sh:/docker-entrypoint-initdb.d/001-create-application-role.sh:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sciforge_admin -d sciforge_collaboration"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    logging: *default-logging
+    cpus: ${SCIFORGE_COLLAB_POSTGRES_CPUS:-1.5}
+    mem_limit: ${SCIFORGE_COLLAB_POSTGRES_MEMORY:-2g}
+    pids_limit: ${SCIFORGE_COLLAB_POSTGRES_PIDS:-256}
+    shm_size: 256m
+    stop_grace_period: 60s
+
+  migrate:
+    image: sciforge-collaboration-runtime:${SCIFORGE_COLLAB_CONTRACT_COMMIT:?set SCIFORGE_COLLAB_CONTRACT_COMMIT}
+    profiles: [tools]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["migrate"]
+    environment: *runtime-environment
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 128
+    restart: "no"
+
+  app:
+    image: sciforge-collaboration-runtime:${SCIFORGE_COLLAB_CONTRACT_COMMIT:?set SCIFORGE_COLLAB_CONTRACT_COMMIT}
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        CONTRACT_COMMIT: ${SCIFORGE_COLLAB_CONTRACT_COMMIT:?set SCIFORGE_COLLAB_CONTRACT_COMMIT}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *runtime-environment
+    ports:
+      - target: 8787
+        published: ${SCIFORGE_COLLAB_HOST_PORT:-8787}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - database
+      - private-edge
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    cpus: ${SCIFORGE_COLLAB_APP_CPUS:-1.0}
+    mem_limit: ${SCIFORGE_COLLAB_APP_MEMORY:-768m}
+    pids_limit: ${SCIFORGE_COLLAB_APP_PIDS:-256}
+    stop_grace_period: 25s
+    labels:
+      org.opencontainers.image.revision: ${SCIFORGE_COLLAB_CONTRACT_COMMIT:?set SCIFORGE_COLLAB_CONTRACT_COMMIT}
+      cn.sciforge.deployment.mode: core-only-private
+
+networks:
+  database:
+    internal: true
+  private-edge:
+
+volumes:
+  collaboration-db:

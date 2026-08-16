@@ -38,6 +38,7 @@ export const projectIdSchema = opaqueId('prj')
 export const projectEndpointBindingIdSchema = opaqueId('peb')
 export const taskIdSchema = opaqueId('tsk')
 export const projectRecordIdSchema = opaqueId('rec')
+export const resourceRefIdSchema = opaqueId('rrf')
 export const inboxMessageIdSchema = opaqueId('ibx')
 export const receiptIdSchema = opaqueId('rcp')
 export const humanRequestIdSchema = opaqueId('hrq')
@@ -58,6 +59,7 @@ export type ProjectId = z.infer<typeof projectIdSchema>
 export type ProjectEndpointBindingId = z.infer<typeof projectEndpointBindingIdSchema>
 export type TaskId = z.infer<typeof taskIdSchema>
 export type ProjectRecordId = z.infer<typeof projectRecordIdSchema>
+export type ResourceRefId = z.infer<typeof resourceRefIdSchema>
 export type InboxMessageId = z.infer<typeof inboxMessageIdSchema>
 export type ReceiptId = z.infer<typeof receiptIdSchema>
 export type HumanRequestId = z.infer<typeof humanRequestIdSchema>
@@ -96,20 +98,25 @@ export type AssuranceLevel = z.infer<typeof assuranceLevelSchema>
 export const jsonObjectSchema = z.record(z.string(), z.json())
 export type JsonObject = z.infer<typeof jsonObjectSchema>
 
-const credentialKeyPattern = /(?:^|[_-])(?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|api[_-]?key|private[_-]?key|challenge)(?:$|[_-])/iu
+const credentialKeyPattern = /(?:^|[_-])(?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|api[_-]?key|private[_-]?key|access[_-]?key|challenge)(?:$|[_-])/iu
 const embeddedCredentialPatterns = [
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gu,
   /([a-z][a-z0-9+.-]*:\/\/[^\s:/]+:)[^\s@]+@/giu
 ] as const
+const embeddedCredentialAssignmentPattern = /(^|[?&#;,\s])((?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|token|api[_-]?key|private[_-]?key|access[_-]?key)\s*(?:=|:)\s*)([^\s&#;,]+)/giu
 
 export const REDACTED_VALUE = '[REDACTED]' as const
 
 function redactString(value: string): string {
-  return value
+  const redacted = value
     .replace(embeddedCredentialPatterns[0], REDACTED_VALUE)
     .replace(embeddedCredentialPatterns[1], REDACTED_VALUE)
     .replace(embeddedCredentialPatterns[2], `$1${REDACTED_VALUE}@`)
+    .replace(embeddedCredentialAssignmentPattern, `$1$2${REDACTED_VALUE}`)
+  // Encoded credential assignments cannot be selectively replaced without
+  // changing the caller's transport value. Redact the complete string instead.
+  return containsCredentialMaterial(redacted) ? REDACTED_VALUE : redacted
 }
 
 export function isCredentialFieldName(key: string): boolean {
@@ -121,9 +128,39 @@ export function isCredentialFieldName(key: string): boolean {
     'password',
     'passphrase',
     'secret',
+    'signature',
+    'sig',
     'apikey',
-    'privatekey'
+    'privatekey',
+    'accesskey'
   ].some((suffix) => normalized.endsWith(suffix))
+}
+
+/** Detect credential material even when a transport percent-encodes it. */
+export function containsCredentialMaterial(value: string): boolean {
+  const variants = [value]
+  let decoded = value
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded)
+      if (next === decoded) break
+      variants.push(next)
+      decoded = next
+    } catch {
+      break
+    }
+  }
+  return variants.some((candidate) => {
+    embeddedCredentialAssignmentPattern.lastIndex = 0
+    for (let match = embeddedCredentialAssignmentPattern.exec(candidate); match !== null;
+      match = embeddedCredentialAssignmentPattern.exec(candidate)) {
+      if (match[3] !== REDACTED_VALUE) return true
+    }
+    return embeddedCredentialPatterns.some((pattern) => {
+      pattern.lastIndex = 0
+      return pattern.test(candidate)
+    })
+  })
 }
 
 export function redactCredentials(value: unknown): unknown {
@@ -140,10 +177,7 @@ export function redactCredentials(value: unknown): unknown {
 function findCredentialLeak(value: unknown, path = '$'): string | undefined {
   if (typeof value === 'string') {
     if (value === REDACTED_VALUE) return undefined
-    for (const pattern of embeddedCredentialPatterns) {
-      pattern.lastIndex = 0
-      if (pattern.test(value)) return path
-    }
+    if (containsCredentialMaterial(value)) return path
     return undefined
   }
   if (Array.isArray(value)) {

@@ -25,6 +25,9 @@
 - [x] 3.4 在同一数据库事务中提交状态变化、审计和 InboxMessage；WebSocket 只发送 `inbox.available`，客户端通过 sequence 拉取并 ack。
 - [x] 3.5 实现服务重启恢复、离线信箱、cursor、bounded retention、重复请求 reconciliation 和被撤销凭据的即时拒绝。
 - [x] 3.6 实现 Project Record 访问控制与接受流程，禁止个人 transcript、凭据、本地路径或完整工具日志自动进入云端共享记忆。
+- [x] 3.7 实现 Project 成员可读的最小 Agent capability directory，隐藏凭据、installation identity 和本地运行时详情。
+- [x] 3.8 实现当前 assignee 的结构化 Task progress 与可查询结果摘要，复用 revision、幂等、审计和 Coordinator inbox。
+- [x] 3.9 实现 provider-neutral ResourceRef 创建、查询和失效，严格拒绝正文、凭据、非 HTTPS URL 与本地绝对路径。
 
 ## 4. Zulip 与 Human Gateway
 
@@ -84,3 +87,4 @@
 - [x] 10.4 Renderer 测试覆盖 Participant 组合展示、无 Project 完成绑定、primary Agent 切换、Session 分享、Project 状态和显式错误。
 - [x] 10.5 运行 package boundary、generated composition freshness、capability governance、typecheck、focused/full tests、changed-file lint 和 packaged smoke tests。
 - [x] 10.6 更新中文用户及运维文档，区分 User、手机端点、Agent、个人 Session、Project topic、Task、在线依赖、权限保证和故障恢复。
+- [x] 10.7 发布 A 最小公共 API 中文说明与真实请求示例，覆盖身份、Project/成员、能力、Task 路由、进度、结果、消息、人工确认和 ResourceRef。

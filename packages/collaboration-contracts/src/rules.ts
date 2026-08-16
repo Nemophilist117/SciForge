@@ -67,6 +67,10 @@ export const STATE_TRANSITIONS = {
     accepted: [],
     rejected: []
   },
+  resource_ref: {
+    available: ['invalidated'],
+    invalidated: []
+  },
   human_needed: {
     pending: ['answered', 'expired', 'cancelled'],
     answered: [],
@@ -174,9 +178,11 @@ export const STABLE_ENTITY_ID_FIELDS = {
   remote_session_projection: 'projectionId',
   project_input: 'projectInputId',
   project: 'projectId',
+  project_capability_directory: 'projectId',
   project_endpoint_binding: 'projectEndpointBindingId',
   task: 'taskId',
   project_record: 'projectRecordId',
+  resource_ref: 'resourceRefId',
   human_needed: 'humanRequestId',
   human_answer: 'humanAnswerId'
 } as const

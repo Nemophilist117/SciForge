@@ -253,6 +253,7 @@ export class FakeCollaborationRepository {
   constructor() {
     this.state = this.#emptyState()
     this.closed = false
+    this.transactionTail = Promise.resolve()
   }
 
   #emptyState() {
@@ -271,6 +272,7 @@ export class FakeCollaborationRepository {
       projectMembers: new Map(),
       tasks: new Map(),
       projectRecords: new Map(),
+      resourceRefs: new Map(),
       credentials: new Map(),
       receipts: new Map(),
       inboxes: new Map(),
@@ -285,12 +287,18 @@ export class FakeCollaborationRepository {
 
   async transaction(work) {
     this.#assertOpen()
+    const previous = this.transactionTail
+    let release
+    this.transactionTail = new Promise((resolve) => { release = resolve })
+    await previous
     const snapshot = copy(this.state)
     try {
       return await work(this)
     } catch (error) {
       this.state = snapshot
       throw error
+    } finally {
+      release()
     }
   }
 
@@ -533,6 +541,13 @@ export class FakeCollaborationRepository {
     )).length
   }
 
+  async countOpenProjectTasks(projectId) {
+    const closed = new Set(['rejected', 'completed', 'failed', 'cancelled'])
+    return [...this.state.tasks.values()].filter((item) => (
+      item.projectId === projectId && !closed.has(item.status)
+    )).length
+  }
+
   async listActiveProjectsForCoordinator(agentId) {
     return copy([...this.state.projects.values()].filter((item) => (
       item.coordinatorAgentId === agentId && item.status === 'active'
@@ -545,6 +560,14 @@ export class FakeCollaborationRepository {
   }
 
   async getTask(taskId) {
+    return copy(this.state.tasks.get(taskId) ?? null)
+  }
+
+  async getProjectForUpdate(projectId) {
+    return copy(this.state.projects.get(projectId) ?? null)
+  }
+
+  async getTaskForUpdate(taskId) {
     return copy(this.state.tasks.get(taskId) ?? null)
   }
 
@@ -574,6 +597,19 @@ export class FakeCollaborationRepository {
 
   async updateProjectRecord(record, expectedRevision) {
     revisionUpdate(this.state.projectRecords, record.projectRecordId, record, expectedRevision)
+  }
+
+  async getResourceRef(resourceRefId) {
+    return copy(this.state.resourceRefs.get(resourceRefId) ?? null)
+  }
+
+  async insertResourceRef(resource) {
+    if (this.state.resourceRefs.has(resource.resourceRefId)) throw new Error('fake repository duplicate ResourceRef')
+    this.state.resourceRefs.set(resource.resourceRefId, copy(resource))
+  }
+
+  async updateResourceRef(resource, expectedRevision) {
+    revisionUpdate(this.state.resourceRefs, resource.resourceRefId, resource, expectedRevision)
   }
 
   async appendInbox(message) {

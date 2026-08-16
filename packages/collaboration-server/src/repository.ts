@@ -13,6 +13,7 @@ import type {
   StoredProjectInput,
   StoredProjectMember,
   StoredProjectRecord,
+  StoredResourceRef,
   StoredProjection,
   StoredReceipt,
   StoredTask,
@@ -44,10 +45,12 @@ export interface CollaborationReadRepository {
   getProjectMember(projectId: string, userId: string): Promise<StoredProjectMember | null>
   listProjectMembers(projectId: string): Promise<StoredProjectMember[]>
   countProjectTasks(projectId: string, coordinationRound?: number): Promise<number>
+  countOpenProjectTasks(projectId: string): Promise<number>
   listOpenTasksForAgent(agentId: string): Promise<StoredTask[]>
   getTask(taskId: string): Promise<StoredTask | null>
   getProjectRecord(projectRecordId: string): Promise<StoredProjectRecord | null>
   listProjectRecords(projectId: string, acceptedOnly: boolean): Promise<StoredProjectRecord[]>
+  getResourceRef(resourceRefId: string): Promise<StoredResourceRef | null>
   getCredentialByDigest(tokenDigest: string): Promise<StoredCredential | null>
   getReceipt(actorKey: string, idempotencyKey: string): Promise<StoredReceipt | null>
   getReceiptById(receiptId: string): Promise<StoredReceipt | null>
@@ -57,6 +60,8 @@ export interface CollaborationReadRepository {
 
 export interface CollaborationTransaction extends CollaborationReadRepository {
   lockIdempotency(actorKey: string, idempotencyKey: string): Promise<void>
+  getProjectForUpdate(projectId: string): Promise<StoredProject | null>
+  getTaskForUpdate(taskId: string): Promise<StoredTask | null>
   insertUser(user: StoredUser): Promise<void>
   updateUser(user: StoredUser, expectedRevision: number): Promise<void>
   insertChallenge(challenge: StoredChallenge): Promise<void>
@@ -85,6 +90,8 @@ export interface CollaborationTransaction extends CollaborationReadRepository {
   updateTask(task: StoredTask, expectedRevision: number): Promise<void>
   insertProjectRecord(record: StoredProjectRecord): Promise<void>
   updateProjectRecord(record: StoredProjectRecord, expectedRevision: number): Promise<void>
+  insertResourceRef(resource: StoredResourceRef): Promise<void>
+  updateResourceRef(resource: StoredResourceRef, expectedRevision: number): Promise<void>
   appendInbox(message: Omit<StoredInboxMessage, 'sequence'>): Promise<StoredInboxMessage>
   ackInbox(recipient: InboxRecipient, throughSequence: number, updatedAt: string): Promise<StoredInboxCursor>
   insertReceipt(receipt: StoredReceipt): Promise<void>

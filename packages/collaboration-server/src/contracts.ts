@@ -6,8 +6,10 @@ import {
   inboxMessageSchema,
   participantProfileSchema,
   projectInputSchema,
+  projectCapabilityDirectorySchema,
   projectEndpointBindingSchema,
   projectRecordSchema,
+  resourceRefSchema,
   projectSchema,
   remoteSessionProjectionSchema,
   taskSchema,
@@ -20,8 +22,10 @@ import {
   type ParticipantProfile,
   type Project,
   type ProjectInput,
+  type ProjectCapabilityDirectory,
   type ProjectEndpointBinding,
   type ProjectRecord,
+  type ResourceRef,
   type RemoteSessionProjection,
   type Task,
   type UserPrincipal
@@ -38,8 +42,10 @@ import type {
   StoredProject,
   StoredProjectEndpointBinding,
   StoredProjectInput,
+  ProjectCapabilityDirectoryView,
   StoredProjectMember,
   StoredProjectRecord,
+  StoredResourceRef,
   StoredProjection,
   StoredTask,
   StoredUser
@@ -93,6 +99,16 @@ export function toProject(project: StoredProject, members: StoredProjectMember[]
     budget: project.budgets, revision: project.revision, createdAt: project.createdAt, updatedAt: project.updatedAt })
 }
 
+export function toProjectCapabilityDirectory(directory: ProjectCapabilityDirectoryView): ProjectCapabilityDirectory {
+  return projectCapabilityDirectorySchema.parse({
+    schemaVersion: 1,
+    type: 'project_capability_directory',
+    projectId: directory.projectId,
+    projectRevision: directory.projectRevision,
+    agents: directory.agents.map((agent) => ({ ...agent, capabilities: [...agent.capabilities].sort() }))
+  })
+}
+
 export function toTask(task: StoredTask): Task {
   const status = task.status === 'in_progress' ? 'running' : task.status === 'completed' ? 'succeeded' : task.status
   return taskSchema.parse({ schemaVersion: 1, type: 'task', taskId: task.taskId, projectId: task.projectId,
@@ -100,6 +116,9 @@ export function toTask(task: StoredTask): Task {
     title: task.title, objective: task.objective, completionCriteria: task.completionCriteria,
     dependencyTaskIds: task.dependencyTaskIds, status, attempt: task.retryCount + 1, maxRetries: task.maxRetries,
     ...(task.activeTurnId ? { activeTurnId: task.activeTurnId } : {}),
+    ...(task.progress ? { progress: task.progress } : {}),
+    ...(task.status === 'completed' && task.resultSummary ? { resultSummary: task.resultSummary } : {}),
+    ...(task.status === 'failed' && task.safeFailureCode ? { safeFailureCode: task.safeFailureCode } : {}),
     ...(task.completedAt ? { completedAt: task.completedAt } : {}), revision: task.revision,
     createdAt: task.createdAt, updatedAt: task.updatedAt })
 }
@@ -113,6 +132,30 @@ export function toProjectRecord(record: StoredProjectRecord): ProjectRecord {
     acceptedByUserId: record.acceptedByUserId ?? null, acceptedByAgentId: record.acceptedByAgentId ?? null,
     acceptedAt: record.acceptedAt ?? null, revision: record.revision,
     createdAt: record.createdAt, updatedAt: record.updatedAt })
+}
+
+export function toResourceRef(resource: StoredResourceRef): ResourceRef {
+  return resourceRefSchema.parse({
+    schemaVersion: 1,
+    type: 'resource_ref',
+    resourceRefId: resource.resourceRefId,
+    projectId: resource.projectId,
+    taskId: resource.taskId ?? null,
+    taskRevision: resource.taskRevision ?? null,
+    createdByUserId: resource.createdByUserId,
+    createdByAgentId: resource.createdByAgentId ?? null,
+    provider: resource.provider,
+    externalId: resource.externalId,
+    kind: resource.kind,
+    name: resource.name,
+    openUrl: resource.openUrl,
+    version: resource.version ?? null,
+    status: resource.status,
+    invalidatedAt: resource.invalidatedAt ?? null,
+    revision: resource.revision,
+    createdAt: resource.createdAt,
+    updatedAt: resource.updatedAt
+  })
 }
 
 export function toProjectInput(input: StoredProjectInput): ProjectInput {

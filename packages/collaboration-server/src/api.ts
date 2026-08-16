@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import {
   createCollaborationError,
+  requestIdSchema,
   restRequestSchema,
   restResponseSchema,
   type HumanEndpointProviderContract,
@@ -21,9 +22,11 @@ import {
   toInboxMessage,
   toParticipant,
   toProject,
+  toProjectCapabilityDirectory,
   toProjectEndpointBinding,
   toProjectInput,
   toProjectRecord,
+  toResourceRef,
   toProjection,
   toTask,
   toUserPrincipal
@@ -86,28 +89,42 @@ async function handle(
   if (request.method !== 'POST' || url.pathname !== `${basePath}/v1/commands`) {
     return sendJson(response, 404, { ok: false })
   }
-  requireJson(request)
-  const raw = await readJson(request, maxBodyBytes)
-  const command = restRequestSchema.parse(raw)
-  const headerKey = firstHeader(request.headers['idempotency-key'])
-  if ('idempotencyKey' in command && headerKey !== command.idempotencyKey) {
-    throw new CollaborationServiceError('validation_failed', 'Idempotency-Key header must match the strict command body.')
-  }
-  if (isAnonymousBootstrapCommand(command)) {
-    limiter.consume(request.socket.remoteAddress ?? 'unknown', command.type)
-  }
-  const actor = await resolveActor(request, command, options)
-  let body: RestResponse
+  const failureContext: { requestId?: string; expectedRevision?: number } = {}
   try {
-    body = await dispatch(command, actor, options)
-  } catch (error) {
-    if (actor && error instanceof CollaborationServiceError && !error.auditRecorded) {
-      await options.service.recordRejectedBoundary(actor, command.type, error).catch(() => undefined)
+    requireJson(request)
+    const raw = await readJson(request, maxBodyBytes)
+    if (raw && typeof raw === 'object' && 'requestId' in raw) {
+      const parsedRequestId = requestIdSchema.safeParse(raw.requestId)
+      if (parsedRequestId.success) failureContext.requestId = parsedRequestId.data
     }
-    throw error
+    const command = restRequestSchema.parse(raw)
+    failureContext.requestId = command.requestId
+    if ('expectedRevision' in command) failureContext.expectedRevision = command.expectedRevision
+    else if ('expectedTaskRevision' in command && command.expectedTaskRevision !== undefined) {
+      failureContext.expectedRevision = command.expectedTaskRevision
+    }
+    const headerKey = firstHeader(request.headers['idempotency-key'])
+    if ('idempotencyKey' in command && headerKey !== command.idempotencyKey) {
+      throw new CollaborationServiceError('validation_failed', 'Idempotency-Key header must match the strict command body.')
+    }
+    if (isAnonymousBootstrapCommand(command)) {
+      limiter.consume(request.socket.remoteAddress ?? 'unknown', command.type)
+    }
+    const actor = await resolveActor(request, command, options)
+    let body: RestResponse
+    try {
+      body = await dispatch(command, actor, options)
+    } catch (error) {
+      if (actor && error instanceof CollaborationServiceError && !error.auditRecorded) {
+        await options.service.recordRejectedBoundary(actor, command.type, error).catch(() => undefined)
+      }
+      throw error
+    }
+    const validated = restResponseSchema.parse(body)
+    sendJson(response, 200, validated)
+  } catch (error) {
+    sendFailure(response, error, failureContext)
   }
-  const validated = restResponseSchema.parse(body)
-  sendJson(response, 200, validated)
 }
 
 async function resolveActor(
@@ -130,6 +147,7 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
   const { service } = options
   switch (command.type) {
     case 'pairing.begin': {
+      requireAvailableProvider(options.providers, command.provider)
       const result = await service.beginPairing(command)
       if (typeof result.challengeCode !== 'string' || typeof result.pollSecret !== 'string') {
         throw new CollaborationServiceError('idempotency_conflict', 'One-time pairing material was already returned; start a new pairing request if it was lost.')
@@ -157,6 +175,7 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     case 'endpoint.challenge.create': {
       const user = requiredUser(actor)
       if (user.userId !== command.userId) throw new CollaborationServiceError('permission_denied', 'Cannot create another user endpoint challenge.')
+      requireAvailableProvider(options.providers, command.expectedIdentity.provider)
       const result = await service.beginPairing({ provider: command.expectedIdentity.provider,
         realmId: command.expectedIdentity.realmId, requestedDisplayName: (await service.getUser(user, user.userId)).displayName,
         idempotencyKey: command.idempotencyKey, requestedBy: user,
@@ -242,6 +261,8 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       const view = await service.getProject(requiredActor(actor), command.projectId)
       return entityResponse(command, toProject(view.project, view.members))
     }
+    case 'project.capability_directory.get': return entityResponse(command,
+      toProjectCapabilityDirectory(await service.getProjectCapabilityDirectory(requiredHumanOrAgent(actor), command.projectId)))
     case 'project.transition': {
       const project = await service.transitionProject(requiredUser(actor), command)
       const view = await service.getProject(requiredActor(actor), project.projectId)
@@ -279,14 +300,26 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       if (status === 'cancelled') return entityResponse(command, toTask(await service.cancelTask(requiredAgent(actor), command)))
       return entityResponse(command, toTask(await service.transitionTask(requiredAgent(actor), {
         taskId: command.taskId, expectedRevision: command.expectedRevision, status,
-        resultSummary: command.resultSummary, failureSummary: command.safeFailureCode,
+        resultSummary: command.resultSummary, safeFailureCode: command.safeFailureCode,
         idempotencyKey: command.idempotencyKey })))
     }
+    case 'task.progress.report': return entityResponse(command, toTask(await service.reportTaskProgress(
+      requiredAgent(actor), command
+    )))
     case 'project_record.submit': return entityResponse(command, toProjectRecord(await service.submitProjectRecord(requiredHumanOrAgent(actor), {
       projectId: command.projectId, kind: command.kind, summary: command.body,
       sourceTaskId: command.sourceTaskId ?? undefined, sourceRevision: command.sourceRevision,
       idempotencyKey: command.idempotencyKey })))
     case 'project_record.accept': return entityResponse(command, toProjectRecord(await service.acceptProjectRecord(requiredHumanOrAgent(actor), command)))
+    case 'resource.create': return entityResponse(command, toResourceRef(await service.createResourceRef(
+      requiredHumanOrAgent(actor), command
+    )))
+    case 'resource.get': return entityResponse(command, toResourceRef(await service.getResourceRef(
+      requiredActor(actor), command.resourceRefId
+    )))
+    case 'resource.invalidate': return entityResponse(command, toResourceRef(await service.invalidateResourceRef(
+      requiredHumanOrAgent(actor), command
+    )))
     case 'inbox.pull': {
       const page = await service.pullInbox(requiredActor(actor), command)
       return response(command, { type: 'rest.inbox_page', messages: page.messages.map(toInboxMessage),
@@ -315,6 +348,12 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
         requestHash: receipt.requestDigest, status: 'succeeded', resultHash: stableDigest(receipt.response),
         createdAt: receipt.createdAt } })
     }
+  }
+}
+
+function requireAvailableProvider(providers: ProviderDirectory | undefined, provider: string): void {
+  if (!providers?.contracts().some((contract) => contract.provider === provider)) {
+    throw new CollaborationServiceError('resource_offline', 'The requested Human Endpoint provider is not running.')
   }
 }
 
@@ -396,7 +435,11 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
 }
 
-function sendFailure(response: ServerResponse, error: unknown): void {
+function sendFailure(
+  response: ServerResponse,
+  error: unknown,
+  context: { requestId?: string; expectedRevision?: number } = {}
+): void {
   if (response.headersSent) {
     response.destroy()
     return
@@ -411,9 +454,20 @@ function sendFailure(response: ServerResponse, error: unknown): void {
     resource_offline: 'provider_unavailable', request_expired: 'expired'
   } as const
   const code = codeMap[serviceError.code as keyof typeof codeMap] ?? serviceError.code
-  const errorBody = createCollaborationError(code as Parameters<typeof createCollaborationError>[0], serviceError.message)
+  const currentRevision = serviceError.details?.currentRevision
+  const errorBody = createCollaborationError(
+    code as Parameters<typeof createCollaborationError>[0],
+    serviceError.message,
+    {
+      ...(context.expectedRevision === undefined ? {} : { expectedRevision: context.expectedRevision }),
+      ...(Number.isSafeInteger(currentRevision) && Number(currentRevision) >= 1
+        ? { currentRevision: Number(currentRevision) }
+        : {})
+    }
+  )
+  const requestId = context.requestId ?? `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`
   sendJson(response, errorBody.httpStatus, { protocolVersion: '1.0', type: 'rest.error',
-    requestId: `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`, error: errorBody })
+    requestId, error: errorBody })
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

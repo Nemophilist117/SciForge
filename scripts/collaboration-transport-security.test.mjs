@@ -15,6 +15,26 @@ import {
 } from '../test-fixtures/collaboration/fake-adapters.mjs'
 
 const BASE_PATH = '/collaboration'
+const FAKE_PROVIDER_DIRECTORY = Object.freeze({
+  contracts: () => [{
+    protocolVersion: '1.0',
+    type: 'human_endpoint_provider_contract',
+    provider: 'fake-im',
+    displayName: 'Fake IM',
+    capabilities: {
+      textMessages: true,
+      stableLocators: true,
+      eventCursor: true,
+      locatorRename: true,
+      locatorMove: true,
+      locatorDiscovery: true,
+      identityChallenge: true
+    },
+    onboarding: { realmLabel: 'Realm', accountLabel: 'Account', containerLabel: 'Container', topicLabel: 'Topic' },
+    limits: { maxTextLength: 10_000, maxLocatorDisplayLength: 200 }
+  }],
+  listLocators: async () => ({ locators: [] })
+})
 
 function invalidTestOnlyValue(label) {
   return ['INVALID', 'TEST', 'ONLY', label].join('_')
@@ -107,7 +127,8 @@ test('8.4 production HTTP boundary bounds command bodies, rate limits pairing an
     readiness: async () => true,
     maxBodyBytes: 1_024,
     now: clock.now,
-    basePath: BASE_PATH
+    basePath: BASE_PATH,
+    providers: FAKE_PROVIDER_DIRECTORY
   })
   t.after(() => closeServer(server))
   const baseUrl = await listen(server)

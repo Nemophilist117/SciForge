@@ -86,3 +86,60 @@ PoC SHALL 使用一个服务、一个 PostgreSQL 事实库和一个 WebSocket �
 - **WHEN** 服务在 active Project 中重启
 - **THEN** 已提交状态和未确认信箱 SHALL 保持可恢复
 - **AND** 客户端重连 SHALL NOT 导致重复 Task 或 HumanAnswer。
+
+### Requirement: Project 成员可以查询最小能力目录
+
+云端 SHALL 为 active Project 成员提供 provider-neutral 的能力目录，返回该 Project 成员所拥有 Agent 的
+非敏感身份、在线状态和 capability ID。目录 SHALL NOT 暴露设备凭据、installation identity、人类端点、
+本地路径或私有运行时详情，也 SHALL NOT 允许非成员枚举 Project 资源。
+
+#### Scenario: Coordinator 为 Task 选择执行者
+
+- **WHEN** active Project 的 Coordinator 查询成员能力
+- **THEN** 云端 SHALL 返回属于 active member user 的 active Agent 及其 capabilities
+- **AND** 返回结果 SHALL 保留明确的 `ownerUserId` 与 `agentId`
+- **AND** 系统 SHALL NOT 根据能力自动分派 Task。
+
+#### Scenario: 非成员枚举能力
+
+- **WHEN** 非 Project 成员查询能力目录
+- **THEN** 云端 SHALL 返回 typed permission error
+- **AND** SHALL NOT 泄漏成员或 Agent 信息。
+
+### Requirement: Task 进度与结果使用当前授权和 revision
+
+当前 assignee Agent SHALL 可以对 running Task 重复提交有界、结构化进度，并在终态提交最小结果摘要。
+每次写入 SHALL 携带 idempotency key 和 expected revision，更新 Task revision，并通知显式 Coordinator；
+非 assignee、旧 revision 或改派前 Agent 的写入 SHALL 被拒绝。
+
+#### Scenario: Worker 上报进度
+
+- **WHEN** 当前 assignee 为 running Task 上报 percent 和安全摘要
+- **THEN** 云端 SHALL 持久化最新进度并递增 Task revision
+- **AND** Coordinator inbox SHALL 收到 `task.updated`
+- **AND** 普通进度 SHALL NOT 产生手机通知。
+
+#### Scenario: Worker 回传结果
+
+- **WHEN** 当前 assignee 把 running Task 转为 succeeded 并提交结果摘要
+- **THEN** 云端 SHALL 原子保存终态与结果摘要
+- **AND** Project 成员通过当前 Task revision SHALL 能读取该摘要
+- **AND** 旧 assignee 或旧 revision SHALL NOT 覆盖当前结果。
+
+### Requirement: ResourceRef 只保存安全资源引用
+
+云端 SHALL 保存与 Project 关联、可选关联 Task 的 provider-neutral `ResourceRef` 元数据。引用 SHALL 只包含
+稳定外部 ID、资源种类、显示名、HTTPS 打开地址、provider version/status 和 provenance；SHALL NOT 接受或
+保存文件正文、provider credential、`file://` URL、本地绝对路径或 provider 私有对象。
+
+#### Scenario: Worker 返回云端资源引用
+
+- **WHEN** active Project 的当前 Task assignee 提交合法 HTTPS ResourceRef
+- **THEN** 云端 SHALL 持久化引用、actor、Project、可选 Task revision 和审计事件
+- **AND** Project 成员 SHALL 能按公开合同查询该引用。
+
+#### Scenario: 请求夹带正文或本地路径
+
+- **WHEN** ResourceRef 请求包含未知正文字段、凭据字段、非 HTTPS URL 或本地绝对路径
+- **THEN** strict contract SHALL 拒绝整个请求
+- **AND** 云端 SHALL NOT 持久化部分引用。

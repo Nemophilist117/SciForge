@@ -3,12 +3,14 @@ import {
   agentIdSchema,
   assuranceLevelSchema,
   challengeIdSchema,
+  containsCredentialMaterial,
   credentialVersionSchema,
   displayNameSchema,
   entityMetadataShape,
   humanAnswerIdSchema,
   humanEndpointIdSchema,
   humanRequestIdSchema,
+  isCredentialFieldName,
   installationIdSchema,
   localItemIdSchema,
   nonEmptyTextSchema,
@@ -19,8 +21,11 @@ import {
   projectRecordIdSchema,
   projectionIdSchema,
   providerMessageIdSchema,
+  providerIdSchema,
+  resourceRefIdSchema,
   revisionSchema,
   runtimeIdSchema,
+  schemaVersionSchema,
   sequenceSchema,
   taskIdSchema,
   threadIdSchema,
@@ -123,6 +128,28 @@ export const agentNodeSchema = z.object({
   }
 })
 export type AgentNode = z.infer<typeof agentNodeSchema>
+
+export const projectCapabilityAgentSchema = z.object({
+  agentId: agentIdSchema,
+  ownerUserId: userIdSchema,
+  displayName: displayNameSchema,
+  nodeType: agentNodeTypeSchema,
+  capabilities: z.array(agentCapabilitySchema).max(256).refine(uniqueStrings, 'Capabilities must be unique'),
+  connectionStatus: agentConnectionStatusSchema,
+  lastSeenAt: timestampSchema.optional(),
+  revision: revisionSchema
+}).strict()
+export type ProjectCapabilityAgent = z.infer<typeof projectCapabilityAgentSchema>
+
+export const projectCapabilityDirectorySchema = z.object({
+  schemaVersion: schemaVersionSchema,
+  type: z.literal('project_capability_directory'),
+  projectId: projectIdSchema,
+  projectRevision: revisionSchema,
+  agents: z.array(projectCapabilityAgentSchema).max(10_000)
+    .refine((agents) => uniqueStrings(agents.map((agent) => agent.agentId)), 'Capability Agent IDs must be unique')
+}).strict()
+export type ProjectCapabilityDirectory = z.infer<typeof projectCapabilityDirectorySchema>
 
 export const participantStatusSchema = z.enum(['incomplete', 'active', 'suspended', 'revoked'])
 export type ParticipantStatus = z.infer<typeof participantStatusSchema>
@@ -267,6 +294,15 @@ export const taskStatusSchema = z.enum([
 ])
 export type TaskStatus = z.infer<typeof taskStatusSchema>
 
+export const taskProgressSchema = z.object({
+  percent: z.number().int().min(0).max(100),
+  summary: z.string().trim().min(1).max(2_000),
+  reportedAt: timestampSchema
+}).strict()
+export type TaskProgress = z.infer<typeof taskProgressSchema>
+
+export const taskSafeFailureCodeSchema = z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/u)
+
 export const taskSchema = z.object({
   ...entityMetadataShape,
   type: z.literal('task'),
@@ -282,6 +318,9 @@ export const taskSchema = z.object({
   attempt: z.number().int().min(0).max(100),
   maxRetries: z.number().int().min(0).max(100),
   activeTurnId: turnIdSchema.optional(),
+  progress: taskProgressSchema.optional(),
+  resultSummary: nonEmptyTextSchema.optional(),
+  safeFailureCode: taskSafeFailureCodeSchema.optional(),
   completedAt: timestampSchema.optional()
 }).strict().superRefine((task, context) => {
   if (task.dependencyTaskIds.includes(task.taskId)) {
@@ -293,6 +332,12 @@ export const taskSchema = z.object({
   const terminal = task.status === 'rejected' || task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled'
   if (terminal !== (task.completedAt !== undefined)) {
     context.addIssue({ code: 'custom', path: ['completedAt'], message: 'Terminal Task requires completedAt exclusively' })
+  }
+  if ((task.status === 'succeeded') !== (task.resultSummary !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['resultSummary'], message: 'Succeeded Task requires resultSummary exclusively' })
+  }
+  if ((task.status === 'failed') !== (task.safeFailureCode !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['safeFailureCode'], message: 'Failed Task requires safeFailureCode exclusively' })
   }
 })
 export type Task = z.infer<typeof taskSchema>
@@ -327,6 +372,110 @@ export const projectRecordSchema = z.object({
   }
 })
 export type ProjectRecord = z.infer<typeof projectRecordSchema>
+
+export const resourceRefProviderSchema = providerIdSchema
+export const resourceRefKindSchema = z.string().regex(/^[a-z][a-z0-9._-]{0,127}$/u)
+const unicodeControlCharacterPattern = /\p{Cc}/u
+export const resourceRefExternalIdSchema = z.string().trim().min(1).max(512)
+  .refine((value) => !/^(?:file:|\/|~[\\/]|[A-Za-z]:[\\/]|\\\\)/iu.test(value), {
+    message: 'Resource external ID must not be a local absolute path or file URL'
+  })
+  .refine((value) => !unicodeControlCharacterPattern.test(value), {
+    message: 'Resource external ID must not contain control characters'
+  })
+  .refine((value) => !containsCredentialMaterial(value), {
+    message: 'Resource external ID must not contain credential material'
+  })
+export const resourceRefNameSchema = displayNameSchema
+  .refine((value) => !unicodeControlCharacterPattern.test(value), {
+    message: 'Resource name must not contain control characters'
+  })
+  .refine((value) => !containsCredentialMaterial(value), {
+    message: 'Resource name must not contain credential material'
+  })
+export const resourceRefVersionSchema = z.string().trim().min(1).max(200)
+  .refine((value) => !unicodeControlCharacterPattern.test(value), {
+    message: 'Resource version must not contain control characters'
+  })
+  .refine((value) => !containsCredentialMaterial(value), {
+    message: 'Resource version must not contain credential material'
+  })
+export const resourceRefOpenUrlSchema = z.string().trim().min(1).max(2_048).superRefine((value, context) => {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must be a valid HTTPS URL' })
+    return
+  }
+  if (parsed.protocol !== 'https:' || !/^https:\/\/[^/?#@\s]+(?:[/?]|$)/iu.test(value)) {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must use HTTPS' })
+  }
+  if (parsed.username || parsed.password) {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must not contain credentials' })
+  }
+  if (value.includes('#')) {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must not contain a fragment' })
+  }
+  const sensitiveParameter = [...parsed.searchParams.keys()].find((key) => {
+    const normalized = key.replace(/[^a-z0-9]/giu, '').toLowerCase()
+    return isCredentialFieldName(key) || /^(?:authorization|credential|password|passphrase|secret|signature|sig|token|apikey|privatekey|accesskey)$/u.test(normalized)
+  })
+  if (sensitiveParameter) {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must not contain credential-bearing query parameters' })
+  }
+  if (containsCredentialMaterial(value)) {
+    context.addIssue({ code: 'custom', message: 'Resource openUrl must not embed authorization material' })
+  }
+})
+
+export const resourceRefStatusSchema = z.enum(['available', 'invalidated'])
+export type ResourceRefStatus = z.infer<typeof resourceRefStatusSchema>
+
+export const resourceRefCreateMetadataSchema = z.object({
+  provider: resourceRefProviderSchema,
+  externalId: resourceRefExternalIdSchema,
+  kind: resourceRefKindSchema,
+  name: resourceRefNameSchema,
+  openUrl: resourceRefOpenUrlSchema,
+  version: resourceRefVersionSchema.optional()
+}).strict()
+export type ResourceRefCreateMetadata = z.infer<typeof resourceRefCreateMetadataSchema>
+
+export const resourceRefSchema = z.object({
+  ...entityMetadataShape,
+  type: z.literal('resource_ref'),
+  resourceRefId: resourceRefIdSchema,
+  projectId: projectIdSchema,
+  taskId: taskIdSchema.nullable(),
+  taskRevision: revisionSchema.nullable(),
+  createdByUserId: userIdSchema,
+  createdByAgentId: agentIdSchema.nullable(),
+  provider: resourceRefProviderSchema,
+  externalId: resourceRefExternalIdSchema,
+  kind: resourceRefKindSchema,
+  name: resourceRefNameSchema,
+  openUrl: resourceRefOpenUrlSchema,
+  version: resourceRefVersionSchema.nullable(),
+  status: resourceRefStatusSchema,
+  invalidatedAt: timestampSchema.nullable()
+}).strict().superRefine((resource, context) => {
+  if ((resource.taskId === null) !== (resource.taskRevision === null)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['taskRevision'],
+      message: 'Task-scoped ResourceRef requires Task identity and revision together'
+    })
+  }
+  if ((resource.status === 'invalidated') !== (resource.invalidatedAt !== null)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['invalidatedAt'],
+      message: 'Invalidated ResourceRef requires invalidatedAt exclusively'
+    })
+  }
+})
+export type ResourceRef = z.infer<typeof resourceRefSchema>
 
 export const humanNeededStatusSchema = z.enum(['pending', 'answered', 'expired', 'cancelled'])
 export const humanNeededSchema = z.object({

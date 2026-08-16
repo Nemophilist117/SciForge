@@ -18,6 +18,7 @@ import {
   providerMessageIdSchema,
   providerOpaqueIdSchema,
   receiptIdSchema,
+  resourceRefIdSchema,
   requestIdSchema,
   revisionSchema,
   runtimeIdSchema,
@@ -39,11 +40,15 @@ import {
   orderedProjectionItemSchema,
   participantProfileSchema,
   projectInputSchema,
+  projectCapabilityDirectorySchema,
   projectEndpointBindingSchema,
   projectRecordSchema,
+  resourceRefCreateMetadataSchema,
+  resourceRefSchema,
   projectSchema,
   remoteSessionProjectionSchema,
   taskSchema,
+  taskSafeFailureCodeSchema,
   taskStatusSchema,
   userPrincipalSchema
 } from './entities.js'
@@ -370,6 +375,7 @@ export const restRequestSchema = z.discriminatedUnion('type', [
   z.object({ ...writeCommandShape, type: z.literal('projection.message.publish'), projectionId: projectionIdSchema, projectionRevision: revisionSchema, localItemId: localItemIdSchema, localTurnId: runtimeTurnIdSchema.optional(), kind: z.enum(['user_message', 'assistant_final', 'system_status']), text: nonEmptyTextSchema, occurredAt: timestampSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project.create'), ownerUserId: userIdSchema, displayName: z.string().trim().min(1).max(200), goal: nonEmptyTextSchema, memberUserIds: z.array(userIdSchema).min(1).max(1_000), coordinatorAgentId: agentIdSchema, budget: z.object({ maxTasks: z.number().int().min(1).max(10_000), maxTasksPerRound: z.number().int().min(1).max(1_000), maxCoordinationRounds: z.number().int().min(1).max(10_000), maxTaskRetries: z.number().int().min(0).max(100) }).strict() }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('project.get'), projectId: projectIdSchema }).strict(),
+  z.object({ ...protocolEnvelopeShape, type: z.literal('project.capability_directory.get'), projectId: projectIdSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project.transition'), projectId: projectIdSchema, expectedRevision: revisionSchema, status: z.enum(['active', 'paused', 'completed', 'cancelled']) }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project.transfer_coordinator'), projectId: projectIdSchema, expectedRevision: revisionSchema, coordinatorAgentId: agentIdSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project.input.create'), projectId: projectIdSchema, senderUserId: userIdSchema, sourceHumanEndpointId: humanEndpointIdSchema, providerMessageId: providerMessageIdSchema, text: nonEmptyTextSchema, occurredAt: timestampSchema }).strict(),
@@ -378,9 +384,30 @@ export const restRequestSchema = z.discriminatedUnion('type', [
   z.object({ ...protocolEnvelopeShape, type: z.literal('project.endpoint.get'), projectId: projectIdSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('task.create'), projectId: projectIdSchema, expectedRevision: revisionSchema, assigneeAgentId: agentIdSchema, title: z.string().trim().min(1).max(200), objective: nonEmptyTextSchema, completionCriteria: z.array(z.string().trim().min(1).max(2_000)).min(1).max(100), dependencyTaskIds: z.array(taskIdSchema).max(1_000) }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('task.get'), taskId: taskIdSchema }).strict(),
-  z.object({ ...writeCommandShape, type: z.literal('task.transition'), taskId: taskIdSchema, expectedRevision: revisionSchema, status: taskStatusSchema, resultSummary: nonEmptyTextSchema.optional(), safeFailureCode: z.string().regex(/^[a-z][a-z0-9_.-]{0,63}$/u).optional() }).strict(),
+  z.object({ ...writeCommandShape, type: z.literal('task.transition'), taskId: taskIdSchema, expectedRevision: revisionSchema, status: taskStatusSchema, resultSummary: nonEmptyTextSchema.optional(), safeFailureCode: taskSafeFailureCodeSchema.optional() }).strict()
+    .superRefine((command, context) => {
+      if ((command.status === 'succeeded') !== (command.resultSummary !== undefined)) {
+        context.addIssue({ code: 'custom', path: ['resultSummary'], message: 'Succeeded Task transition requires resultSummary exclusively' })
+      }
+      if ((command.status === 'failed') !== (command.safeFailureCode !== undefined)) {
+        context.addIssue({ code: 'custom', path: ['safeFailureCode'], message: 'Failed Task transition requires safeFailureCode exclusively' })
+      }
+    }),
+  z.object({ ...writeCommandShape, type: z.literal('task.progress.report'), taskId: taskIdSchema,
+    expectedRevision: revisionSchema, percent: z.number().int().min(0).max(100),
+    summary: z.string().trim().min(1).max(2_000) }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project_record.submit'), projectId: projectIdSchema, sourceTaskId: taskIdSchema.nullable(), sourceRevision: revisionSchema, kind: z.enum(['observation', 'proposal', 'decision', 'summary', 'task_result']), body: nonEmptyTextSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project_record.accept'), projectRecordId: projectRecordIdSchema, expectedRevision: revisionSchema, decision: z.enum(['accepted', 'rejected']) }).strict(),
+  z.object({ ...writeCommandShape, ...resourceRefCreateMetadataSchema.shape, type: z.literal('resource.create'),
+    projectId: projectIdSchema, taskId: taskIdSchema.optional(), expectedTaskRevision: revisionSchema.optional() }).strict()
+    .superRefine((command, context) => {
+      if ((command.taskId === undefined) !== (command.expectedTaskRevision === undefined)) {
+        context.addIssue({ code: 'custom', path: ['expectedTaskRevision'],
+          message: 'Task-scoped ResourceRef requires taskId and expectedTaskRevision together' })
+      }
+    }),
+  z.object({ ...protocolEnvelopeShape, type: z.literal('resource.get'), resourceRefId: resourceRefIdSchema }).strict(),
+  z.object({ ...writeCommandShape, type: z.literal('resource.invalidate'), resourceRefId: resourceRefIdSchema, expectedRevision: revisionSchema }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('inbox.pull'), recipientType: z.enum(['user', 'agent']), afterSequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), limit: z.number().int().min(1).max(1_000) }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('inbox.ack'), inboxMessageId: inboxMessageIdSchema, sequence: sequenceSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('human.answer'), humanRequestId: z.string().regex(/^hrq_[A-Za-z0-9]{12,64}$/u), requestRevision: revisionSchema, answer: nonEmptyTextSchema }).strict(),
@@ -398,9 +425,11 @@ export const restEntitySchema = z.union([
   remoteSessionProjectionSchema,
   projectInputSchema,
   projectSchema,
+  projectCapabilityDirectorySchema,
   projectEndpointBindingSchema,
   taskSchema,
   projectRecordSchema,
+  resourceRefSchema,
   humanNeededSchema,
   humanAnswerSchema
 ])

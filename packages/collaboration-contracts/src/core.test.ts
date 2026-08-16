@@ -86,6 +86,17 @@ describe('credential redaction', () => {
     expect(JSON.stringify(redacted)).not.toContain(['INVALID', 'TEST', 'ONLY'].join('_'))
   })
 
+  it('redacts every plain or encoded credential assignment that detection rejects', () => {
+    const marker = invalidTestOnlyValue('ASSIGNMENT_VALUE')
+    const redacted = redactCredentials({
+      plain: `token=${marker}; password: ${marker}`,
+      repeated: `sig=${marker}&access_key=${marker}`,
+      encoded: `https://example.invalid/resource?${encodeURIComponent(`signature=${marker}`)}`
+    })
+    expect(JSON.stringify(redacted)).not.toContain(marker)
+    expect(redactedJsonSchema.safeParse(redacted).success).toBe(true)
+  })
+
   it('rejects unredacted diagnostic JSON and accepts sanitized output', () => {
     expect(redactedJsonSchema.safeParse(INVALID_TEST_ONLY_CREDENTIAL_FIXTURE).success).toBe(false)
     expect(redactedJsonSchema.safeParse(redactedCredentialFixture).success).toBe(true)

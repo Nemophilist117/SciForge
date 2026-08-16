@@ -26,6 +26,10 @@
 
 跨包协议、实体和 wire schema 必须从 `@sciforge/collaboration-contracts` 的公共入口导入；不要依赖本包 `src/` 私有路径。
 
+A 自身 MVP 的唯一命令入口、actor、幂等与 revision 规则，以及用户、设备、Project、Task、Inbox、
+Human confirmation、ResourceRef、能力目录、进度和结果回传的最小公共面，见
+[A 云端协作最小公共 API](../../docs/collaboration-public-api.zh-CN.md)。
+
 ## 前置条件
 
 - Node.js `>=22.12.0`。

@@ -110,6 +110,23 @@ export type StoredProjectMember = {
   createdAt: string
 }
 
+export type ProjectCapabilityAgentView = {
+  agentId: string
+  ownerUserId: string
+  displayName: string
+  nodeType: string
+  capabilities: string[]
+  connectionStatus: 'online' | 'offline'
+  lastSeenAt?: string
+  revision: number
+}
+
+export type ProjectCapabilityDirectoryView = {
+  projectId: string
+  projectRevision: number
+  agents: ProjectCapabilityAgentView[]
+}
+
 export type TaskStatus =
   | 'offered'
   | 'accepted'
@@ -134,8 +151,13 @@ export type StoredTask = {
   maxRetries: number
   coordinationRound: number
   activeTurnId?: string
+  progress?: {
+    percent: number
+    summary: string
+    reportedAt: string
+  }
   resultSummary?: string
-  failureSummary?: string
+  safeFailureCode?: string
   revision: number
   createdAt: string
   updatedAt: string
@@ -157,6 +179,26 @@ export type StoredProjectRecord = {
   acceptedByUserId?: string
   acceptedByAgentId?: string
   acceptedAt?: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type StoredResourceRef = {
+  resourceRefId: string
+  projectId: string
+  taskId?: string
+  taskRevision?: number
+  createdByUserId: string
+  createdByAgentId?: string
+  provider: string
+  externalId: string
+  kind: string
+  name: string
+  openUrl: string
+  version?: string
+  status: 'available' | 'invalidated'
+  invalidatedAt?: string
   revision: number
   createdAt: string
   updatedAt: string
