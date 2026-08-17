@@ -32,7 +32,7 @@ A 核心只保存协作所需身份、项目、任务、持久 Inbox、人工确
 | 业务命令与查询 | `POST https://collaboration.example.invalid/v1/commands` | 由 JSON 的 `type` 区分 command；不存在 `/v1/projects`、`/v1/tasks` 等独立 REST 路由 |
 | 实时唤醒 | `GET wss://collaboration.example.invalid/v1/events` | WebSocket Upgrade；只通知 Inbox 有新消息，不传递完整领域事实 |
 | 存活检查 | `GET https://collaboration.example.invalid/healthz` | 仅表示进程可响应 |
-| 就绪检查 | `GET https://collaboration.example.invalid/readyz` | 包括服务依赖就绪状态 |
+| 数据库就绪检查 | `GET https://collaboration.example.invalid/readyz` | 只表示数据库 schema 与关键约束就绪；Provider 健康由部署门禁独立检查 |
 
 所有请求至少包含：
 
@@ -86,7 +86,7 @@ Idempotency-Key: idem_project_create_demo_0001
 }
 ```
 
-同一 actor、同一 `Idempotency-Key`、同一有效载荷重试时通常返回既有结果；同一个 key 对应不同有效载荷时返回 `idempotency_conflict`。返回 pairing secret、user credential 或 Agent device credential 等一次性材料的 command 不会重放明文，重复 key 会返回 `idempotency_conflict`，调用方必须重新开始相应注册流程。读取 command 没有 `idempotencyKey`，也不发送 `Idempotency-Key` 头。
+同一 actor、同一 `Idempotency-Key`、同一业务有效载荷重试时通常返回既有结果；用于关联单次 HTTP 请求的 `requestId` 可以改变，不属于幂等业务有效载荷。同一个 key 对应不同业务有效载荷时返回 `idempotency_conflict`。返回 pairing secret、user credential 或 Agent device credential 等一次性材料的 command 不会重放明文，重复 key 会返回 `idempotency_conflict`，调用方必须重新开始相应注册流程。读取 command 没有 `idempotencyKey`，也不发送 `Idempotency-Key` 头。
 
 ### Revision 乐观并发
 
@@ -101,17 +101,17 @@ Idempotency-Key: idem_project_create_demo_0001
 | 能力 | Command / Query | 认证 actor | 成功响应 | 当前边界 |
 |---|---|---|---|---|
 | 1. 用户 | `pairing.begin`、`pairing.redeem`；`user.get`、`user.update` | 前两者 anonymous；后两者为同一 user，生命周期降级需要相应 assurance | `pairing.begun` / `pairing.pending` / `pairing.verified`；`rest.entity(user_principal)` | 当前可用；`user.create` 虽有合同名，但 HTTP 明确拒绝，用户只由首次已验证绑定创建 |
-| 2. Human—设备绑定 | `endpoint.challenge.create`、`endpoint.transition`、`endpoint.transfer`；`agent.register`、`agent.heartbeat`、`agent.rotate_credential`、`agent.owner.transfer`、`agent.revoke`；`participant.get`、`participant.update_primary` | 绑定 owner user；心跳为对应 agent；Participant 仅本人 | `pairing.begun`、`rest.entity(...)`、`participant.snapshot`；注册/轮换凭据只在成功响应中返回一次 | 当前可用，但绑定闭环依赖 provider；`pairing.verify` 与 `endpoint.bind` 不能由普通 HTTP 客户端直接调用 |
+| 2. Human—设备绑定 | `endpoint.challenge.create`、`endpoint.transition`、`endpoint.transfer`；`agent.register`、`agent.heartbeat`、`agent.rotate_credential`、`agent.owner.transfer`、`agent.revoke`；`credential.revoke_current`；`participant.get`、`participant.update_primary` | 绑定 owner user；心跳为对应 agent；当前 user/agent Bearer 只能撤销自身；Participant 仅本人 | `pairing.begun`、`rest.entity(...)`、`participant.snapshot` 或 `rest.receipt`；注册/轮换凭据只在成功响应中返回一次 | 当前可用，但绑定闭环依赖 provider；`pairing.verify` 与 `endpoint.bind` 不能由普通 HTTP 客户端直接调用 |
 | 3. 项目 | `project.create`、`project.get`、`project.transition`、`project.transfer_coordinator`；可选 provider 映射为 `project.endpoint.bind/update/get` | 创建、状态和 Coordinator 变更为 owner user；读取为 active member 的 user 或 agent | `rest.entity(project)` 或 `rest.entity(project_endpoint_binding)` | 当前可用；没有 `project.list` |
 | 4. 成员 | `project.create.memberUserIds`；`project.get` | 创建为 owner user；读取为 active member | `project.memberUserIds` | 当前只支持创建时固定成员；没有成员 add/remove、角色修改或独立成员列表 command |
-| 5. Task | `task.create`、`task.get`、`task.transition` | 创建为 Project Coordinator Agent；读取为 active member；状态更新通常为当前 assignee Agent；`cancelled` 为 Coordinator Agent | `rest.entity(task)` | 当前可用；公共状态为 `offered/accepted/rejected/running/needs_human/succeeded/failed/cancelled`；没有 `task.list` |
+| 5. Task | `task.create`、`task.get`、`task.transition`、`task.retry` | 创建和 retry/reassign 为 Project Coordinator Agent；读取为 active member；执行状态更新通常为当前 assignee Agent；`cancelled` 为 Coordinator Agent | `rest.entity(task)` | 当前可用；`task.retry` 只接受 `failed/rejected`，同一 assignee 为重试、不同 assignee 为改派；没有 `task.list` |
 | 6. 消息 | `project.input.create`、`projection.message.publish`、`inbox.pull`、`inbox.ack` | Project 输入为 verified `human_endpoint`；投影发布为所属 agent；Inbox 为对应 user 或 agent | `rest.entity(project_input)`、`rest.receipt`、`rest.inbox_page` | 合同当前存在；前两者的端到端交付依赖 provider adapter；A 不提供完整聊天历史查询 |
 | 7. 进度 | `task.progress.report` | 当前 assignee Agent；Task 必须为 `running` | 更新后的 `rest.entity(task)`，含 `progress` | 当前可用；只接受 `percent` 与安全摘要，不接收日志或 transcript |
 | 8. 能力查询 | `project.capability_directory.get` | 该 active Project 的 active member user 或 agent | `rest.entity(project_capability_directory)` | 当前可用；只返回 active Agent 的公共能力，不提供全局 Agent 目录 |
-| 9. 人工确认 | `human.needed.create`、`human.answer` | 前者为当前 assignee Agent，目标必须是 active member；后者仅为目标用户对应的 verified `human_endpoint` | `rest.entity(human_needed)`、`rest.entity(human_answer)`，同时产生持久 Inbox 消息 | 创建当前可用；回答依赖 provider gateway；普通 user Bearer 不能直接调用 `human.answer` |
+| 9. 人工确认 | `human.needed.create`、`human.answer` | 前者为当前 assignee Agent，目标必须是 active member；后者仅为目标用户对应的 verified `human_endpoint` | `rest.entity(human_needed)`、`rest.entity(human_answer)`，同时产生持久 Inbox 消息 | `human.needed.create` 在同一 Task 上将 `running` 改为 `needs_human` 并递增 Task revision；回答不会自动恢复 Task |
 | 10. 资源引用 | `resource.create`、`resource.get`、`resource.invalidate` | active Project member 的 user 或 agent；读取为任意 active member；Worker Agent 写入必须绑定自己已接受的 active Task | `rest.entity(resource_ref)` | 本地已验收；只接受元数据与 HTTPS 引用，并保存 actor 与 Task revision provenance |
-| 11. 任务路由 | `task.create` 后向 assignee 写入 `task.offered`；assignee 用 `inbox.pull`、`task.get` 获取工作 | Coordinator Agent 创建；目标为 active member 所属 active Agent | 创建响应为 Task；路由结果为有序 `inbox_message` | 当前支持首次路由；没有公开 Assignment 实体，也没有公开 reassign/retry command |
-| 12. 结果回传 | `task.transition(status="succeeded", resultSummary=...)`；需要共享记录时使用 `project_record.submit/accept`；产物另建 ResourceRef | Task 结果为当前 assignee Agent；Record 提交为 active member user/agent；验收为 owner user 或 Coordinator Agent | 更新后的 Task；`rest.entity(project_record)`；可关联 `resource_ref` | 当前可用；没有独立 `TaskResult`、`evidenceRefs` 或正文上传 |
+| 11. 任务路由 | `task.create` 或 `task.retry` 后向当前 assignee 写入唯一 `task.offered`；assignee 用 `inbox.pull`、`task.get` 获取工作 | Coordinator Agent 创建、重试或改派；目标为 active member 所属 active Agent | 更新后的 Task；路由结果为有序 `inbox_message` | 当前支持首次路由与 terminal Task 的显式重试/改派；没有独立 Assignment 实体 |
+| 12. 结果回传 | `task.transition(status="succeeded", resultSummary=...)`；需要共享记录时使用 `project_record.submit/get/accept`；产物另建 ResourceRef | Task 结果为当前 assignee Agent；Record 提交/读取为 active member user/agent；验收为 owner user 或 Coordinator Agent | 更新后的 Task；`rest.entity(project_record)`；可关联 `resource_ref` | 当前可用；没有独立 `TaskResult`、`evidenceRefs` 或正文上传 |
 
 ### 本分支新增的冻结字段
 
@@ -312,6 +312,24 @@ sequenceDiagram
 }
 ```
 
+### 重试或改派 terminal Task
+
+调用 actor 必须是 Project 当前 Coordinator Agent。Task 只能处于 `failed` 或 `rejected`；`assigneeAgentId` 与原值相同表示重试，不同表示改派。服务在同一事务中锁定 Project 和 Task，清空旧进度、结果与失败码，增加 attempt/revision，并只向新 assignee 写入一条新 revision 的 `task.offered`。
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000016",
+  "type": "task.retry",
+  "idempotencyKey": "idem_task_retry_demo_0001",
+  "taskId": "tsk_demo0000000001",
+  "assigneeAgentId": "agt_demo0000000003",
+  "expectedRevision": 7
+}
+```
+
+两个请求并发使用同一 `expectedRevision` 时最多一个成功；其余请求返回包含 `currentRevision` 的 `revision_conflict`。改派成功后，旧 Worker 即使知道新 revision，也不能继续提交 progress、ResourceRef 或 Task result。
+
 ### 回传最终结果
 
 调用 actor 必须是当前 assignee Agent。`resultSummary` 是 Task 的公共安全摘要，不是完整日志、私人对话或附件正文。
@@ -331,7 +349,7 @@ sequenceDiagram
 
 ### 请求人工确认
 
-调用 actor 必须是当前 assignee Agent，Task 必须为 `running`；请求会进入目标 user 的持久 Inbox。
+调用 actor 必须是当前 assignee Agent，Task 必须为 `running`；请求会进入目标 user 的持久 Inbox。A 不创建新的 Task，而是在同一个 Task 上执行 `running -> needs_human`，并将 Task revision 递增一次。`human.needed.create` 响应返回 HumanNeeded；Coordinator 可从 `task.updated` 获得定位信息，其他参与方用 `task.get` 读取 Task 的最新状态和 revision。
 
 ```json
 {
@@ -360,6 +378,75 @@ sequenceDiagram
   "humanRequestId": "hrq_demo0000000001",
   "requestRevision": 1,
   "answer": "允许。"
+}
+```
+
+`human.answer` 只完成 HumanNeeded 并向请求者 Worker 与 Coordinator 写入 `human.answer.received`，不会把 Task 自动改回 `running`，也不会替 Worker 作继续执行的决定。Worker 消费并确认 `human.answer.received` 后，必须先读取同一个 Task：
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000018",
+  "type": "task.get",
+  "taskId": "tsk_demo0000000001"
+}
+```
+
+Worker 确认答案仍适用于当前 Task 后，使用 `task.get` 响应中的最新 `revision` 显式恢复执行：
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000019",
+  "type": "task.transition",
+  "idempotencyKey": "idem_task_resume_demo_0001",
+  "taskId": "tsk_demo0000000001",
+  "expectedRevision": 6,
+  "status": "running"
+}
+```
+
+如果读取到的 Task 已被取消、重试或改派，Worker 不得恢复旧执行；过期 revision 会返回包含 `currentRevision` 的 `revision_conflict`。
+
+### 读取 ProjectRecord
+
+`project_record.submit` 成功后，Coordinator 会收到只含定位字段的 `project_record.submitted`。任意 active Project member 的 user 或 agent 可按 ID 读取完整严格实体，再决定是否由 owner user 或 Coordinator Agent 调用 `project_record.accept`：
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000020",
+  "type": "project_record.get",
+  "projectRecordId": "rec_demo0000000001"
+}
+```
+
+成功响应示例：
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000020",
+  "type": "rest.entity",
+  "entity": {
+    "schemaVersion": 1,
+    "type": "project_record",
+    "projectRecordId": "rec_demo0000000001",
+    "projectId": "prj_demo0000000001",
+    "kind": "task_result",
+    "status": "proposed",
+    "body": "已完成分析；复核材料见关联 ResourceRef。",
+    "authorUserId": "usr_demo0000000002",
+    "authorAgentId": "agt_demo0000000002",
+    "sourceTaskId": "tsk_demo0000000001",
+    "sourceRevision": 7,
+    "acceptedByUserId": null,
+    "acceptedByAgentId": null,
+    "acceptedAt": null,
+    "revision": 1,
+    "createdAt": "2026-08-17T12:10:00.000Z",
+    "updatedAt": "2026-08-17T12:10:00.000Z"
+  }
 }
 ```
 
@@ -411,6 +498,21 @@ active member user、当前 Worker 或 Coordinator 可按各自权限使用当�
 
 失效只改变 A 中引用状态，不删除 provider 侧资源。
 
+### 撤销当前应用凭据
+
+user 或 agent 可以撤销当前请求所用的 Bearer；服务从认证上下文取得 credential ID，请求体不能指定或猜测其他凭据。成功响应是 `rest.receipt`，不回显 token。该响应返回后，同一 Bearer 立即以 `401 credential_revoked` 失败。
+
+```json
+{
+  "protocolVersion": "1.0",
+  "requestId": "req_demo0000000017",
+  "type": "credential.revoke_current",
+  "idempotencyKey": "idem_credential_revoke_demo_0001"
+}
+```
+
+user 恢复访问必须重新走正式 pairing。Agent 要保留原 `agentId`，必须由 owner 使用有效 user credential 调用 `agent.rotate_credential`；重新调用 `agent.register` 会创建新的 Agent 身份，不能当作原 Agent 凭据恢复。Tunnel SSH 权限与应用凭据是两个独立安全边界，必须分别撤销。
+
 ## ⚠️ 错误合同
 
 失败响应统一为 `rest.error`。业务客户端必须按 `error.code` 和 `retryable` 处理，不应解析英文 `message`：
@@ -456,15 +558,17 @@ active member user、当前 Worker 或 Coordinator 可按各自权限使用当�
 以下能力没有公共 command，不能通过直接访问 A 数据库补齐：
 
 - Project 列表、Task 列表、成员增删/角色变更；
-- Task retry/reassign 与独立 Assignment 实体；
+- 独立 Assignment 实体与非 terminal Task 的强制改派；
 - HumanNeeded 的独立 get/list，以及普通 user Bearer 的回答入口；
 - ProjectRecord、ResourceRef 和 ProjectInput 的列表查询；
 - 独立 TaskResult、证据正文、附件上传和全文搜索；
 - 面向浏览器的单次 WebSocket ticket；当前 WebSocket 使用握手 `Authorization` 头，不能安全设置该头的客户端应使用 `inbox.pull` 轮询，不能把长期凭据放入 URL。
 
-其中 `project.capability_directory.get`、`task.progress.report`、Task 公共 `progress/resultSummary/safeFailureCode` 与 `resource.create/get/invalidate` 均已通过合同、权限、数据库和 HTTP 自动测试。其余缺口应在有真实 A 核心需求时单独评审，不能提前吸收 B、C、D、E 的私有模型。
+其中 `project.capability_directory.get`、`task.progress.report`、`task.retry`、`project_record.get`、`credential.revoke_current`、Task 公共 `progress/resultSummary/safeFailureCode` 与 `resource.create/get/invalidate` 均纳入合同、权限、数据库和 HTTP 自动测试门禁。其余缺口应在有真实 A 核心需求时单独评审，不能提前吸收 B、C、D、E 的私有模型。
 
 无 provider 的 core-only 部署会让 `endpoint.catalog.get` 返回空数组，并让 `pairing.begin` 返回 `503 provider_unavailable`；这意味着探针、迁移、端口隔离、备份恢复可以验收，但不能创建首个 User，也不能宣称用户、Project 或 Task 的真实云端业务闭环已经完成。
+
+Provider-enabled 模式启动时必须执行 provider `diagnose()` 并持久化脱敏结果。`readyz=200` 仍只证明数据库可用；部署验收还必须单独证明 catalog 只含预期 Zulip、Bot 认证成功，并存在本次 Provider runtime 启动后的 `healthy` 诊断。
 
 ## 🧱 适配器边界
 

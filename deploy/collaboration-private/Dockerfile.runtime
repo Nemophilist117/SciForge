@@ -2,8 +2,12 @@ FROM node:22.18.0-bookworm-slim
 
 ARG CONTRACT_COMMIT
 LABEL org.opencontainers.image.title="SciForge collaboration server" \
-      org.opencontainers.image.description="Core-only SciForge collaboration runtime" \
+      org.opencontainers.image.description="Private SciForge collaboration runtime" \
       org.opencontainers.image.revision="${CONTRACT_COMMIT}"
+
+RUN groupadd --system --gid 10001 sciforge \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home \
+      --home-dir /nonexistent --shell /usr/sbin/nologin sciforge
 
 WORKDIR /app
 
@@ -21,7 +25,7 @@ COPY bundle/CONTRACT_COMMIT ./CONTRACT_COMMIT
 RUN test "$(tr -d '\r\n' < CONTRACT_COMMIT)" = "${CONTRACT_COMMIT}"
 
 ENV NODE_ENV=production
-USER node
+USER 10001:10001
 EXPOSE 8787
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["node", "node_modules/@sciforge/collaboration-server/dist/cli.js"]

@@ -141,6 +141,46 @@ describe('canonical pairing and bidirectional Session commands', () => {
     expect(sanitized).not.toContain(['INVALID', 'TEST', 'ONLY'].join('_'))
   })
 
+  it('exposes strict current-credential revocation and Coordinator Task retry commands', () => {
+    const revokeCurrent = {
+      protocolVersion: '1.0',
+      requestId: TEST_IDS.requestId,
+      type: 'credential.revoke_current',
+      idempotencyKey: 'idem_credential_revoke_current_01'
+    }
+    expect(restRequestSchema.safeParse(revokeCurrent).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...revokeCurrent, credentialId: 'credential_guessed' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...revokeCurrent, userId: TEST_IDS.userId }).success).toBe(false)
+
+    const retryTask = {
+      protocolVersion: '1.0',
+      requestId: TEST_IDS.requestId,
+      type: 'task.retry',
+      idempotencyKey: 'idem_task_retry_current_01',
+      taskId: TEST_IDS.taskId,
+      assigneeAgentId: TEST_IDS.agentId,
+      expectedRevision: 3
+    }
+    expect(restRequestSchema.safeParse(retryTask).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...retryTask, assigneeAgentId: undefined }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...retryTask, expectedRevision: undefined }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...retryTask, status: 'offered' }).success).toBe(false)
+  })
+
+  it('exposes a strict read-only ProjectRecord query', () => {
+    const getProjectRecord = {
+      protocolVersion: '1.0',
+      requestId: TEST_IDS.requestId,
+      type: 'project_record.get',
+      projectRecordId: TEST_IDS.projectRecordId
+    }
+    expect(restRequestSchema.safeParse(getProjectRecord).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...getProjectRecord, projectRecordId: undefined }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...getProjectRecord, projectId: TEST_IDS.projectId }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...getProjectRecord, expectedRevision: 1 }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...getProjectRecord, idempotencyKey: 'idem_record_get_invalid_01' }).success).toBe(false)
+  })
+
   it('exposes one strict canonical ResourceRef command path', () => {
     const create = {
       protocolVersion: '1.0',

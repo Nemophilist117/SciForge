@@ -57,6 +57,10 @@ running_image_id="$(docker container inspect --format '{{.Image}}' "$app_contain
 [[ "$running_image_id" == "$image_id" ]] || die "Running application container does not use the approved runtime image."
 container_revision="$("${COMPOSE[@]}" exec -T app sh -c 'tr -d "\r\n" < /app/CONTRACT_COMMIT')"
 [[ "$container_revision" == "$expected_commit" ]] || die "Running container revision proof mismatch."
+runtime_identity="$("${COMPOSE[@]}" exec -T app node -e \
+  'process.stdout.write(`${process.getuid()}:${process.getgid()}`)')"
+[[ "$runtime_identity" == 10001:10001 ]] \
+  || die "Application runtime must use the fixed non-login UID/GID 10001."
 
 # This deployment is intentionally core-only. Fail if provider configuration
 # was accidentally injected into the production process.
@@ -165,4 +169,4 @@ websocket_status="$(curl --silent --output /dev/null --write-out '%{http_code}' 
   "$base_url/v1/events" || true)"
 [[ "$websocket_status" == "401" ]] || die "Unauthenticated WebSocket Upgrade was not rejected with HTTP 401."
 
-echo "Verification passed: loopback-only core, least-privilege database role, release schema v${expected_schema_version}/${expected_table_count} tables, fixed image revision, probes and auth boundaries."
+echo "Verification passed: loopback-only core, least-privilege database role, release schema v${expected_schema_version}/${expected_table_count} tables, fixed image revision/UID/GID, probes and auth boundaries."

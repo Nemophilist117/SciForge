@@ -75,6 +75,7 @@ export interface CollaborationTransaction extends CollaborationReadRepository {
   insertAgent(agent: StoredAgent): Promise<void>
   updateAgent(agent: StoredAgent, expectedRevision: number): Promise<void>
   insertCredential(credential: StoredCredential): Promise<void>
+  revokeCredential(credentialId: string, revokedAt: string): Promise<boolean>
   revokeCredentials(kind: StoredCredential['kind'], subjectId: string, revokedAt: string): Promise<number>
   upsertParticipant(participant: StoredParticipant, expectedRevision: number | null): Promise<void>
   insertProjection(projection: StoredProjection): Promise<void>

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createCollaborationServerRuntime } from './bootstrap.js'
 import { runCollaborationMigrations } from './migrations.js'
-import { createPostgresPool } from './postgres.js'
+import { createPostgresPool, formatPostgresPoolDiagnostic } from './postgres.js'
 import {
   createInstalledProviderRuntime,
   FileProviderSecretReader,
@@ -23,8 +23,13 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
 }
 
 const databaseUrl = requiredEnvironment('SCIFORGE_COLLABORATION_DATABASE_URL')
-const pool = createPostgresPool({ connectionString: databaseUrl,
-  maxConnections: integerEnvironment('SCIFORGE_COLLABORATION_DATABASE_POOL_SIZE', 10, 1, 100) })
+const pool = createPostgresPool({
+  connectionString: databaseUrl,
+  maxConnections: integerEnvironment('SCIFORGE_COLLABORATION_DATABASE_POOL_SIZE', 10, 1, 100),
+  onPoolDiagnostic: (diagnostic) => {
+    process.stderr.write(formatPostgresPoolDiagnostic(diagnostic))
+  }
+})
 
 if (process.argv[2] === 'migrate') {
   await runCollaborationMigrations(pool)

@@ -173,6 +173,10 @@ describe('production HTTP anonymous bootstrap boundary', () => {
       completionCriteria: ['Reference resolves through HTTPS'], dependencyTaskIds: [],
       expectedProjectRevision: project.revision, idempotencyKey: 'idem_api_resource_task_01'
     })
+    const projectRecord = await service.submitProjectRecord(worker.actor, {
+      projectId: project.projectId, kind: 'observation', summary: 'A bounded API-visible observation.',
+      idempotencyKey: 'idem_api_project_record_submit_01'
+    })
     const server = createCollaborationHttpServer({ service, authentication, readiness: async () => true, now })
     servers.push(server)
     await new Promise<void>((resolve, reject) => {
@@ -248,6 +252,20 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     await expect(fetched.json()).resolves.toMatchObject({ entity: { resourceRefId: created.entity.resourceRefId,
       openUrl: createBody.openUrl, status: 'available' } })
 
+    const fetchedProjectRecord = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiProjectRecord01', type: 'project_record.get',
+      projectRecordId: projectRecord.projectRecordId
+    }, workerAgent.deviceCredential)
+    expect(fetchedProjectRecord.status).toBe(200)
+    await expect(fetchedProjectRecord.json()).resolves.toMatchObject({
+      type: 'rest.entity',
+      entity: {
+        type: 'project_record', projectRecordId: projectRecord.projectRecordId,
+        projectId: project.projectId, authorUserId: worker.userId,
+        body: 'A bounded API-visible observation.', status: 'proposed'
+      }
+    })
+
     const invalidated = await postCommand(baseUrl, {
       protocolVersion: '1.0', requestId: 'req_ApiResourceInvalid1', type: 'resource.invalidate',
       idempotencyKey: 'idem_api_resource_invalidate_01', resourceRefId: created.entity.resourceRefId,
@@ -287,6 +305,19 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     const progress = await progressResponse.json() as { entity: { revision: number } }
     expect(progress).toMatchObject({ entity: { status: 'running',
       progress: { percent: 60, summary: 'Resource metadata verified.', reportedAt: now().toISOString() } } })
+    const inboxCountBeforeReplay = [...repository.state.inboxes.values()]
+      .reduce((count, messages) => count + messages.length, 0)
+    const progressReplayResponse = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiTaskProgress02', type: 'task.progress.report',
+      idempotencyKey: 'idem_api_task_progress_01', taskId: task.taskId,
+      expectedRevision: running.entity.revision, percent: 60, summary: 'Resource metadata verified.'
+    }, workerAgent.deviceCredential)
+    expect(progressReplayResponse.status).toBe(200)
+    const progressReplay = await progressReplayResponse.json() as { requestId: string; entity: { revision: number } }
+    expect(progressReplay.requestId).toBe('req_ApiTaskProgress02')
+    expect(progressReplay.entity).toEqual(progress.entity)
+    expect([...repository.state.inboxes.values()].reduce((count, messages) => count + messages.length, 0))
+      .toBe(inboxCountBeforeReplay)
     const completedResponse = await postCommand(baseUrl, {
       protocolVersion: '1.0', requestId: 'req_ApiTaskComplete01', type: 'task.transition',
       idempotencyKey: 'idem_api_task_complete_01', taskId: task.taskId,
@@ -303,6 +334,154 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     await expect(queriedTask.json()).resolves.toMatchObject({ entity: {
       status: 'succeeded', resultSummary: 'HTTPS ResourceRef verified.'
     } })
+  })
+
+  it('publishes idempotent Coordinator retry and current-bearer revocation without accepting caller identity', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const owner = await onboard(service, authentication, 'command-owner', 'provider-command-owner')
+    const worker = await onboard(service, authentication, 'command-worker', 'provider-command-worker')
+    const ownerAgent = await service.registerAgent(owner.actor, {
+      installationId: 'ins_ApiCommand001', displayName: 'Command coordinator', nodeType: 'desktop',
+      capabilities: ['research.coordinate'], idempotencyKey: 'idem_api_command_owner_agent_01'
+    })
+    const workerAgent = await service.registerAgent(worker.actor, {
+      installationId: 'ins_ApiCommand002', displayName: 'Command worker', nodeType: 'desktop',
+      capabilities: ['research.execute'], idempotencyKey: 'idem_api_command_worker_agent_01'
+    })
+    if (!ownerAgent.deviceCredential || !workerAgent.deviceCredential) throw new Error('Expected one-time device credentials')
+    const coordinator = await authentication.resolveBearer(ownerAgent.deviceCredential)
+    const workerDevice = await authentication.resolveBearer(workerAgent.deviceCredential)
+    if (coordinator.kind !== 'agent_device' || workerDevice.kind !== 'agent_device') throw new Error('Expected Agent actors')
+    const project = await service.createProject(owner.actor, {
+      displayName: 'Public command test', goal: 'Verify retry and credential revocation boundaries.',
+      memberUserIds: [owner.userId, worker.userId], coordinatorAgentId: ownerAgent.agent.agentId,
+      budgets: { maxTasks: 4, maxTasksPerRound: 4, maxTaskRetries: 2, maxCoordinationRounds: 2 },
+      idempotencyKey: 'idem_api_command_project_01'
+    })
+    const task = await service.createTask(coordinator, {
+      projectId: project.projectId, assigneeAgentId: workerAgent.agent.agentId,
+      title: 'Fail safely', objective: 'Produce a bounded failure for reassignment.',
+      completionCriteria: ['Failure is machine readable'], dependencyTaskIds: [],
+      expectedProjectRevision: project.revision, idempotencyKey: 'idem_api_command_task_01'
+    })
+    const accepted = await service.transitionTask(workerDevice, { taskId: task.taskId, status: 'accepted',
+      expectedRevision: task.revision, idempotencyKey: 'idem_api_command_task_accept_01' })
+    const running = await service.transitionTask(workerDevice, { taskId: task.taskId, status: 'in_progress',
+      expectedRevision: accepted.revision, idempotencyKey: 'idem_api_command_task_run_01' })
+    const failed = await service.transitionTask(workerDevice, { taskId: task.taskId, status: 'failed',
+      expectedRevision: running.revision, safeFailureCode: 'retry_required',
+      idempotencyKey: 'idem_api_command_task_fail_01' })
+
+    const server = createCollaborationHttpServer({ service, authentication, readiness: async () => true, now })
+    servers.push(server)
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const address = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const retryBody = {
+      protocolVersion: '1.0', requestId: 'req_ApiTaskRetry0001', type: 'task.retry',
+      idempotencyKey: 'idem_api_task_retry_public_01', taskId: task.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: failed.revision
+    }
+
+    const workerRetry = await postCommand(baseUrl, {
+      ...retryBody, requestId: 'req_ApiTaskRetryWrong1', idempotencyKey: 'idem_api_task_retry_wrong_01'
+    }, workerAgent.deviceCredential)
+    expect(workerRetry.status).toBe(403)
+    await expect(workerRetry.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+
+    const retriedResponse = await postCommand(baseUrl, retryBody, ownerAgent.deviceCredential)
+    expect(retriedResponse.status).toBe(200)
+    const retried = await retriedResponse.json() as { entity: { revision: number } }
+    expect(retried).toMatchObject({ entity: {
+      taskId: task.taskId, assigneeAgentId: ownerAgent.agent.agentId,
+      status: 'offered', attempt: 2, revision: failed.revision + 1
+    } })
+    const replayedResponse = await postCommand(baseUrl, {
+      ...retryBody, requestId: 'req_ApiTaskRetryReplay1'
+    }, ownerAgent.deviceCredential)
+    expect(replayedResponse.status).toBe(200)
+    await expect(replayedResponse.json()).resolves.toMatchObject({ entity: {
+      taskId: task.taskId, revision: retried.entity.revision, attempt: 2
+    } })
+    const retryOffers = (repository.state.inboxes.get(`agent:${ownerAgent.agent.agentId}`) ?? [])
+      .filter((message: { messageType: string; payload: { taskId?: string } }) => (
+        message.messageType === 'task.offered' && message.payload.taskId === task.taskId
+      ))
+    expect(retryOffers).toHaveLength(1)
+
+    const staleRetry = await postCommand(baseUrl, {
+      ...retryBody, requestId: 'req_ApiTaskRetryStale01', idempotencyKey: 'idem_api_task_retry_stale_01',
+      assigneeAgentId: workerAgent.agent.agentId
+    }, ownerAgent.deviceCredential)
+    expect(staleRetry.status).toBe(409)
+    await expect(staleRetry.json()).resolves.toMatchObject({ error: {
+      code: 'revision_conflict', expectedRevision: failed.revision, currentRevision: retried.entity.revision
+    } })
+    const oldWorkerWrite = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiOldWorkerWrite1', type: 'task.transition',
+      idempotencyKey: 'idem_api_old_worker_write_01', taskId: task.taskId,
+      expectedRevision: retried.entity.revision, status: 'accepted'
+    }, workerAgent.deviceCredential)
+    expect(oldWorkerWrite.status).toBe(403)
+    await expect(oldWorkerWrite.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+
+    const forgedRevoke = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokeForged01', type: 'credential.revoke_current',
+      idempotencyKey: 'idem_api_revoke_forged_01', credentialId: owner.actor.credentialId
+    }, workerAgent.deviceCredential)
+    expect(forgedRevoke.status).toBe(400)
+    await expect(forgedRevoke.json()).resolves.toMatchObject({ error: { code: 'validation_error' } })
+
+    const agentRevocation = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokeAgent001', type: 'credential.revoke_current',
+      idempotencyKey: 'idem_api_revoke_agent_current_01'
+    }, workerAgent.deviceCredential)
+    expect(agentRevocation.status).toBe(200)
+    const agentRevocationText = await agentRevocation.text()
+    expect(agentRevocationText).not.toContain(workerAgent.deviceCredential)
+    expect(JSON.parse(agentRevocationText)).toMatchObject({ type: 'rest.receipt', receipt: {
+      type: 'operation.receipt', status: 'succeeded', actor: { actorType: 'agent', agentId: workerAgent.agent.agentId }
+    } })
+    const revokedAgentRequest = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokedAgent01', type: 'inbox.pull',
+      recipientType: 'agent', afterSequence: 0, limit: 10
+    }, workerAgent.deviceCredential)
+    expect(revokedAgentRequest.status).toBe(401)
+    await expect(revokedAgentRequest.json()).resolves.toMatchObject({ error: { code: 'credential_revoked' } })
+    expect((await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiWorkerUserOkay1', type: 'user.get', userId: worker.userId
+    }, worker.userCredential)).status).toBe(200)
+
+    const userRevocation = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokeUser0001', type: 'credential.revoke_current',
+      idempotencyKey: 'idem_api_revoke_user_current_01'
+    }, owner.userCredential)
+    expect(userRevocation.status).toBe(200)
+    const userRevocationText = await userRevocation.text()
+    expect(userRevocationText).not.toContain(owner.userCredential)
+    expect(JSON.parse(userRevocationText)).toMatchObject({ type: 'rest.receipt', receipt: {
+      type: 'operation.receipt', status: 'succeeded', actor: { actorType: 'user', userId: owner.userId }
+    } })
+    const revokedUserRequest = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokedUser001', type: 'user.get', userId: owner.userId
+    }, owner.userCredential)
+    expect(revokedUserRequest.status).toBe(401)
+    await expect(revokedUserRequest.json()).resolves.toMatchObject({ error: { code: 'credential_revoked' } })
+    expect((await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiOwnerAgentOkay1', type: 'task.get', taskId: task.taskId
+    }, ownerAgent.deviceCredential)).status).toBe(200)
+
+    const anonymousRevoke = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiRevokeAnonymous1', type: 'credential.revoke_current',
+      idempotencyKey: 'idem_api_revoke_anonymous_01'
+    })
+    expect(anonymousRevoke.status).toBe(401)
+    await expect(anonymousRevoke.json()).resolves.toMatchObject({ error: { code: 'authentication_required' } })
   })
 })
 

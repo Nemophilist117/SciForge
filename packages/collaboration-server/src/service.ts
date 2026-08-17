@@ -296,6 +296,22 @@ export class CollaborationService {
     })
   }
 
+  async revokeCurrentCredential(
+    actor: UserActor | AgentActor,
+    input: { idempotencyKey: string }
+  ): Promise<void> {
+    await this.commit(actor, 'credential.revoke_current', input.idempotencyKey, input, async (tx, at) => {
+      if (!await tx.revokeCredential(actor.credentialId, at)) {
+        fail('credential_revoked', 'The current bearer credential was already revoked.')
+      }
+      return {
+        response: { protocolVersion: '1.0', type: 'credential.revoked' },
+        resourceKind: 'credential',
+        resourceId: actor.credentialId
+      }
+    })
+  }
+
   async setUserStatus(actor: AuthContext, input: {
     userId: string
     status: 'active' | 'suspended' | 'revoked'
@@ -1481,6 +1497,16 @@ export class CollaborationService {
     }).then(responseEntity<StoredProjectRecord>)
   }
 
+  async getProjectRecord(actor: AuthContext, projectRecordId: string): Promise<StoredProjectRecord> {
+    if (actor.kind !== 'user' && actor.kind !== 'agent_device') {
+      fail('permission_denied', 'Only a user or Agent credential may read Project records.')
+    }
+    const record = required(await this.repository.getProjectRecord(projectRecordId), 'Project record')
+    const member = await this.repository.getProjectMember(record.projectId, actor.userId)
+    authorize({ actor, operation: 'project_read', projectMember: Boolean(member?.active) })
+    return record
+  }
+
   async acceptProjectRecord(actor: UserActor | AgentActor, input: {
     projectRecordId: string
     decision?: 'accepted' | 'rejected'
@@ -1737,7 +1763,7 @@ export class CollaborationService {
     work: (tx: CollaborationTransaction, at: string) => Promise<CommandResult<Record<string, unknown>>>
   ): Promise<Record<string, unknown>> {
     assertText(idempotencyKey, 'idempotencyKey', 8, 300)
-    const requestDigest = stableDigest(request)
+    const requestDigest = stableDigest(idempotencyBusinessPayload(request))
     const at = this.timestamp()
     let notifications: Array<{ recipient: InboxRecipient; sequence: number }> = []
     let response: Record<string, unknown>
@@ -1797,6 +1823,20 @@ function actorAuditIdentity(actor: AuthContext): Pick<StoredAuditEvent, 'actorUs
     case 'human_endpoint': return { actorUserId: actor.userId, actorEndpointId: actor.humanEndpointId }
     case 'agent_device': return { actorUserId: actor.userId, actorAgentId: actor.agentId }
   }
+}
+
+function idempotencyBusinessPayload(request: unknown): unknown {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return request
+  const record = request as Record<string, unknown>
+  if (record.protocolVersion !== '1.0' || typeof record.requestId !== 'string' ||
+      typeof record.type !== 'string') {
+    return request
+  }
+  const businessPayload = { ...record }
+  delete businessPayload.protocolVersion
+  delete businessPayload.requestId
+  delete businessPayload.type
+  return businessPayload
 }
 
 function entityResponse<T>(type: string, entity: T): Record<string, unknown> {

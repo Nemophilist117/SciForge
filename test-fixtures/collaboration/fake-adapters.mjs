@@ -393,6 +393,13 @@ export class FakeCollaborationRepository {
     return copy([...this.state.credentials.values()].find((item) => item.tokenDigest === tokenDigest) ?? null)
   }
 
+  async revokeCredential(credentialId, revokedAt) {
+    const credential = this.state.credentials.get(credentialId)
+    if (!credential || credential.revokedAt) return false
+    credential.revokedAt = revokedAt
+    return true
+  }
+
   async revokeCredentials(kind, subjectId, revokedAt) {
     let updated = 0
     for (const credential of this.state.credentials.values()) {

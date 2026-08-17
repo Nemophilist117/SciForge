@@ -23,6 +23,67 @@ const LOCATOR = {
 }
 
 describe('provider runtime', () => {
+  it('diagnoses an installed provider at startup and persists only redacted diagnostic data', async () => {
+    const sensitiveMarker = 'Bearer TEST_ONLY_PROVIDER_CREDENTIAL'
+    const provider = new FakeProvider([], [], {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      type: 'provider.diagnostic',
+      provider: 'fake',
+      status: 'healthy',
+      checkedAt: '2020-01-01T00:00:00.000Z',
+      safeSummary: `Provider authentication succeeded with ${sensitiveMarker}.`,
+      details: {
+        apiToken: sensitiveMarker,
+        endpoint: 'https://chat.example.invalid'
+      }
+    } as ProviderDiagnostic)
+    const ledger = new FakeRuntimeStore()
+    const runtime = new DefaultCollaborationProviderRuntime({
+      providers: [provider],
+      store: ledger,
+      authentication: { resolveProviderIdentity: async () => { throw new Error('not used') } },
+      repository: emptyRepository(),
+      service: emptyService(),
+      now: () => new Date('2026-08-17T01:02:03.000Z')
+    })
+
+    await runtime.start()
+    await waitUntil(() => provider.startCursors.length === 1, 1_500)
+    await runtime.stop()
+
+    expect(provider.diagnoseCalls).toBe(1)
+    expect(ledger.diagnostics).toEqual([expect.objectContaining({
+      provider: 'fake',
+      status: 'healthy',
+      checkedAt: '2026-08-17T01:02:03.000Z',
+      details: { apiToken: '[REDACTED]', endpoint: 'https://chat.example.invalid' }
+    })])
+    expect(JSON.stringify(ledger.diagnostics)).not.toContain(sensitiveMarker)
+  })
+
+  it('records a failed startup diagnosis without preventing the provider pumps from starting', async () => {
+    const provider = new FakeProvider([], [], new Error('Bearer TEST_ONLY_PROVIDER_CREDENTIAL'))
+    const ledger = new FakeRuntimeStore()
+    const runtime = new DefaultCollaborationProviderRuntime({
+      providers: [provider],
+      store: ledger,
+      authentication: { resolveProviderIdentity: async () => { throw new Error('not used') } },
+      repository: emptyRepository(),
+      service: emptyService()
+    })
+
+    await runtime.start()
+    await waitUntil(() => provider.startCursors.length === 1, 1_500)
+    await runtime.stop()
+
+    expect(provider.diagnoseCalls).toBe(1)
+    expect(ledger.diagnostics).toEqual([expect.objectContaining({
+      provider: 'fake',
+      status: 'degraded'
+    })])
+    expect(JSON.stringify(ledger.diagnostics)).not.toContain('TEST_ONLY_PROVIDER_CREDENTIAL')
+  })
+
   it('preserves a provider-neutral safe code without reading credential-bearing error fields', async () => {
     const sensitiveMarker = ['INVALID', 'TEST', 'ONLY', 'CREDENTIAL'].join('_')
     const error = {
@@ -467,8 +528,20 @@ class FakeProvider implements HumanEndpointProvider {
   private readonly eventsToYield: ProviderEvent[]
 
   readonly sendRequests: ProviderSendRequest[] = []
+  diagnoseCalls = 0
 
-  constructor(event: ProviderEvent | ProviderEvent[], private readonly sendResults: ProviderSendResult[] = []) {
+  constructor(
+    event: ProviderEvent | ProviderEvent[],
+    private readonly sendResults: ProviderSendResult[] = [],
+    private readonly diagnosis: ProviderDiagnostic | Error = {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      type: 'provider.diagnostic',
+      provider: 'fake',
+      status: 'healthy',
+      checkedAt: '2026-08-15T00:00:00.000Z',
+      safeSummary: 'Fake provider is healthy.'
+    }
+  ) {
     this.eventsToYield = Array.isArray(event) ? event : [event]
   }
 
@@ -509,7 +582,11 @@ class FakeProvider implements HumanEndpointProvider {
   }
   async listLocators(): Promise<never> { throw new Error('not used') }
   async updateLocator(): Promise<never> { throw new Error('not used') }
-  async diagnose(): Promise<never> { throw new Error('not used') }
+  async diagnose(): Promise<ProviderDiagnostic> {
+    this.diagnoseCalls += 1
+    if (this.diagnosis instanceof Error) throw this.diagnosis
+    return this.diagnosis
+  }
 }
 
 class FakeRuntimeStore {
@@ -650,9 +727,9 @@ async function runtimeDiagnosticFor(error: unknown): Promise<ProviderDiagnostic>
     service: { ...emptyService(), acceptPersonalProviderMessage: async () => { throw error } }
   })
   await runtime.start()
-  await waitUntil(() => ledger.diagnostics.length > 0, 1_500)
+  await waitUntil(() => ledger.diagnostics.some((item) => item.status === 'degraded'), 1_500)
   await runtime.stop()
-  const diagnostic = ledger.diagnostics[0]
+  const diagnostic = [...ledger.diagnostics].reverse().find((item) => item.status === 'degraded')
   if (!diagnostic) throw new Error('Expected a provider diagnostic.')
   return diagnostic
 }

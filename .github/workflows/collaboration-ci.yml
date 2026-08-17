@@ -57,11 +57,17 @@ jobs:
       - name: Run collaboration production-path tests
         run: npm run collaboration:test
 
+      - name: Validate private acceptance driver
+        run: npm run collaboration:acceptance:test
+
       - name: Test immutable collaboration release builder
         run: npm run collaboration:bundle:test
 
       - name: Check private deployment shell syntax
         run: bash -n deploy/collaboration-private/scripts/*.sh deploy/collaboration-private/postgres-init/*.sh
+
+      - name: Verify private deployment security policy
+        run: deploy/collaboration-private/scripts/static-policy-test.sh
 
       - name: Verify generated composition and capabilities
         run: npm run capability:check

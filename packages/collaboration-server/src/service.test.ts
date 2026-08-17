@@ -94,6 +94,40 @@ describe('CollaborationService canonical transactions', () => {
     expect(repository.state.receipts.size).toBe(terminalReceiptCount)
   })
 
+  it('lets only active Project member users and Agents read a ProjectRecord', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const owner = await onboard(service, authentication, 'record-owner', 'provider-record-owner')
+    const member = await onboard(service, authentication, 'record-member', 'provider-record-member')
+    const outsider = await onboard(service, authentication, 'record-outsider', 'provider-record-outsider')
+    const coordinatorAgent = await registerAgent(service, owner.user, 'recordcoord01')
+    const memberAgent = await registerAgent(service, member.user, 'recordmember1')
+    if (!memberAgent.deviceCredential) throw new Error('Expected member Agent credential')
+    const memberDevice = await authentication.resolveBearer(memberAgent.deviceCredential)
+    if (memberDevice.kind !== 'agent_device') throw new Error('Expected member Agent actor')
+    const project = await service.createProject(owner.user, {
+      displayName: 'ProjectRecord read boundary', goal: 'Share one bounded Project observation.',
+      memberUserIds: [owner.userId, member.userId], coordinatorAgentId: coordinatorAgent.agent.agentId,
+      idempotencyKey: 'idem_project_record_read_project_01'
+    })
+    const record = await service.submitProjectRecord(member.user, {
+      projectId: project.projectId, kind: 'observation', summary: 'A bounded shared observation.',
+      idempotencyKey: 'idem_project_record_read_submit_01'
+    })
+
+    await expect(service.getProjectRecord(owner.user, record.projectRecordId)).resolves.toEqual(record)
+    await expect(service.getProjectRecord(memberDevice, record.projectRecordId)).resolves.toEqual(record)
+    await expect(service.getProjectRecord(outsider.user, record.projectRecordId)).rejects.toMatchObject({
+      code: 'permission_denied'
+    })
+    await expect(service.getProjectRecord(owner.endpoint, record.projectRecordId)).rejects.toMatchObject({
+      code: 'permission_denied'
+    })
+    await expect(service.getProjectRecord({ kind: 'system', actorKey: 'system:record-reader' },
+      record.projectRecordId)).rejects.toMatchObject({ code: 'permission_denied' })
+  })
+
   it('keeps Project task writes star-shaped, idempotent, ordered, and restart-recoverable', async () => {
     const repository = new FakeCollaborationRepository()
     const notifier = new FakeInboxNotifier()

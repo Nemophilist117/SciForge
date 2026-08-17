@@ -27,10 +27,10 @@ image_id="$(docker image inspect --format '{{.Id}}' "sciforge-collaboration-runt
 image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")"
 [[ "$image_revision" == "$expected_commit" ]] || die "Runtime image revision label does not match the approved commit."
 
-"${COMPOSE[@]}" up -d postgres --wait --wait-timeout 180
 if [[ -n "$("${COMPOSE[@]}" ps -a -q app)" ]]; then
   "${COMPOSE[@]}" stop -t 20 app >/dev/null
 fi
+"${COMPOSE[@]}" up -d postgres --wait --wait-timeout 180
 validate_database_role_layout
 "$SCRIPT_DIR/backup.sh" "$ENV_FILE"
 "${COMPOSE[@]}" --profile tools run --rm --no-deps migrate

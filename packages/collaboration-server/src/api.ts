@@ -209,6 +209,11 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       return response(command, { type: 'agent.credential_rotated', agent: toAgent(result.agent), deviceCredential: result.deviceCredential })
     }
     case 'agent.revoke': return entityResponse(command, toAgent(await service.revokeAgent(requiredUser(actor), command)))
+    case 'credential.revoke_current': {
+      const authenticated = requiredHumanOrAgent(actor)
+      await service.revokeCurrentCredential(authenticated, { idempotencyKey: command.idempotencyKey })
+      return receiptResponse(command, authenticated)
+    }
     case 'agent.owner.transfer': {
       const result = await service.transferAgentOwnership(requiredUser(actor), command)
       if (!result.deviceCredential) throw new CollaborationServiceError('idempotency_conflict', 'The transferred Agent credential was already returned.')
@@ -294,6 +299,10 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       objective: command.objective, completionCriteria: command.completionCriteria, dependencyTaskIds: command.dependencyTaskIds,
       expectedProjectRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey })))
     case 'task.get': return entityResponse(command, toTask(await service.getTask(requiredActor(actor), command.taskId)))
+    case 'task.retry': return entityResponse(command, toTask(await service.retryOrReassignTask(requiredAgent(actor), {
+      taskId: command.taskId, assigneeAgentId: command.assigneeAgentId,
+      expectedRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey
+    })))
     case 'task.transition': {
       const status = command.status === 'running' ? 'in_progress' : command.status === 'succeeded' ? 'completed' : command.status
       if (status === 'offered') throw new CollaborationServiceError('invalid_state_transition', 'Retrying a terminal Task requires explicit Coordinator reassignment.')
@@ -310,6 +319,9 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       projectId: command.projectId, kind: command.kind, summary: command.body,
       sourceTaskId: command.sourceTaskId ?? undefined, sourceRevision: command.sourceRevision,
       idempotencyKey: command.idempotencyKey })))
+    case 'project_record.get': return entityResponse(command, toProjectRecord(await service.getProjectRecord(
+      requiredHumanOrAgent(actor), command.projectRecordId
+    )))
     case 'project_record.accept': return entityResponse(command, toProjectRecord(await service.acceptProjectRecord(requiredHumanOrAgent(actor), command)))
     case 'resource.create': return entityResponse(command, toResourceRef(await service.createResourceRef(
       requiredHumanOrAgent(actor), command

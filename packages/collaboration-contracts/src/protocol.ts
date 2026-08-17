@@ -364,6 +364,7 @@ export const restRequestSchema = z.discriminatedUnion('type', [
   z.object({ ...writeCommandShape, type: z.literal('agent.rotate_credential'), agentId: agentIdSchema, expectedRevision: revisionSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('agent.owner.transfer'), agentId: agentIdSchema, targetUserId: userIdSchema, expectedRevision: revisionSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('agent.revoke'), agentId: agentIdSchema, expectedRevision: revisionSchema }).strict(),
+  z.object({ ...writeCommandShape, type: z.literal('credential.revoke_current') }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('participant.get'), userId: userIdSchema }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('endpoint.catalog.get'), provider: providerIdSchema.optional() }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('endpoint.locator.list'), humanEndpointId: humanEndpointIdSchema, query: z.string().trim().max(200).optional(), cursor: z.string().min(1).max(2_048).optional(), limit: z.number().int().min(1).max(500) }).strict(),
@@ -384,6 +385,8 @@ export const restRequestSchema = z.discriminatedUnion('type', [
   z.object({ ...protocolEnvelopeShape, type: z.literal('project.endpoint.get'), projectId: projectIdSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('task.create'), projectId: projectIdSchema, expectedRevision: revisionSchema, assigneeAgentId: agentIdSchema, title: z.string().trim().min(1).max(200), objective: nonEmptyTextSchema, completionCriteria: z.array(z.string().trim().min(1).max(2_000)).min(1).max(100), dependencyTaskIds: z.array(taskIdSchema).max(1_000) }).strict(),
   z.object({ ...protocolEnvelopeShape, type: z.literal('task.get'), taskId: taskIdSchema }).strict(),
+  z.object({ ...writeCommandShape, type: z.literal('task.retry'), taskId: taskIdSchema,
+    assigneeAgentId: agentIdSchema, expectedRevision: revisionSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('task.transition'), taskId: taskIdSchema, expectedRevision: revisionSchema, status: taskStatusSchema, resultSummary: nonEmptyTextSchema.optional(), safeFailureCode: taskSafeFailureCodeSchema.optional() }).strict()
     .superRefine((command, context) => {
       if ((command.status === 'succeeded') !== (command.resultSummary !== undefined)) {
@@ -397,6 +400,7 @@ export const restRequestSchema = z.discriminatedUnion('type', [
     expectedRevision: revisionSchema, percent: z.number().int().min(0).max(100),
     summary: z.string().trim().min(1).max(2_000) }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project_record.submit'), projectId: projectIdSchema, sourceTaskId: taskIdSchema.nullable(), sourceRevision: revisionSchema, kind: z.enum(['observation', 'proposal', 'decision', 'summary', 'task_result']), body: nonEmptyTextSchema }).strict(),
+  z.object({ ...protocolEnvelopeShape, type: z.literal('project_record.get'), projectRecordId: projectRecordIdSchema }).strict(),
   z.object({ ...writeCommandShape, type: z.literal('project_record.accept'), projectRecordId: projectRecordIdSchema, expectedRevision: revisionSchema, decision: z.enum(['accepted', 'rejected']) }).strict(),
   z.object({ ...writeCommandShape, ...resourceRefCreateMetadataSchema.shape, type: z.literal('resource.create'),
     projectId: projectIdSchema, taskId: taskIdSchema.optional(), expectedTaskRevision: revisionSchema.optional() }).strict()

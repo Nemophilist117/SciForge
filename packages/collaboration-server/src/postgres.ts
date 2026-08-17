@@ -48,19 +48,80 @@ export type PostgresRepositoryOptions = {
   connectionString: string
   maxConnections?: number
   statementTimeoutMs?: number
+  onPoolDiagnostic?: (diagnostic: PostgresPoolDiagnostic) => void
+}
+
+export type PostgresPoolDiagnostic = {
+  event: 'postgres.pool.idle_client_error'
+  postgresCode: string | 'unknown'
+  retryable: boolean
 }
 
 export function createPostgresPool(options: PostgresRepositoryOptions): SqlPool {
   const require = createRequire(import.meta.url)
-  const postgres = require('pg') as {
-    Pool: new (config: Record<string, unknown>) => SqlPool
+  type EventedSqlPool = SqlPool & {
+    on(event: 'error', listener: (error: unknown) => void): EventedSqlPool
   }
-  return new postgres.Pool({
+  const postgres = require('pg') as {
+    Pool: new (config: Record<string, unknown>) => EventedSqlPool
+  }
+  const pool = new postgres.Pool({
     connectionString: options.connectionString,
     max: options.maxConnections ?? 10,
     statement_timeout: options.statementTimeoutMs ?? 15_000,
     application_name: 'sciforge-collaboration-server'
   })
+  pool.on('error', (error) => {
+    const diagnostic = createPostgresPoolDiagnostic(error)
+    try {
+      options.onPoolDiagnostic?.(diagnostic)
+    } catch {
+      // Diagnostics must never turn a recoverable idle-client failure into a process failure.
+    }
+  })
+  return pool
+}
+
+export function formatPostgresPoolDiagnostic(
+  diagnostic: PostgresPoolDiagnostic,
+  occurredAt: Date = new Date()
+): string {
+  const postgresCode = isPostgresSqlState(diagnostic.postgresCode) ? diagnostic.postgresCode : 'unknown'
+  return `${JSON.stringify({
+    occurredAt: occurredAt.toISOString(),
+    level: 'error',
+    component: 'postgres',
+    event: 'postgres.pool.idle_client_error',
+    postgresCode,
+    retryable: isRetryablePostgresPoolError(postgresCode)
+  })}\n`
+}
+
+function createPostgresPoolDiagnostic(error: unknown): PostgresPoolDiagnostic {
+  const postgresCode = postgresSqlState(error)
+  return {
+    event: 'postgres.pool.idle_client_error',
+    postgresCode,
+    retryable: isRetryablePostgresPoolError(postgresCode)
+  }
+}
+
+function postgresSqlState(error: unknown): string | 'unknown' {
+  try {
+    if (typeof error !== 'object' || error === null) return 'unknown'
+    const code = Reflect.get(error, 'code')
+    return isPostgresSqlState(code) ? code : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+function isPostgresSqlState(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9A-Z]{5}$/u.test(value)
+}
+
+function isRetryablePostgresPoolError(postgresCode: string | 'unknown'): boolean {
+  return postgresCode.startsWith('08') || postgresCode === '57P01' || postgresCode === '57P02' || postgresCode === '57P03'
 }
 
 export class PostgresCollaborationRepository implements CollaborationRepository {
@@ -557,6 +618,16 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
         Buffer.from(credential.tokenDigest, 'hex'), credential.assurance, credential.generation, credential.createdAt,
         credential.expiresAt ?? null, credential.revokedAt ?? null]
     )
+  }
+
+  async revokeCredential(credentialId: string, revokedAt: string): Promise<boolean> {
+    const result = await this.sql.query(
+      `UPDATE sciforge_collaboration.credentials
+       SET revoked_at=$2
+       WHERE credential_id=$1 AND revoked_at IS NULL`,
+      [credentialId, revokedAt]
+    )
+    return result.rowCount === 1
   }
 
   async revokeCredentials(kind: StoredCredential['kind'], subjectId: string, revokedAt: string): Promise<number> {

@@ -5,6 +5,7 @@ set -euo pipefail
 COMMON_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PRIVATE_DEPLOY_DIR="$(cd "$COMMON_SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$PRIVATE_DEPLOY_DIR/compose.yml"
+PROVIDER_COMPOSE_FILE="$PRIVATE_DEPLOY_DIR/compose.provider-zulip.yml"
 BUNDLE_DIR="$PRIVATE_DEPLOY_DIR/bundle"
 RELEASE_EXPECTED_SCHEMA_VERSION=""
 RELEASE_EXPECTED_TABLES=""
@@ -28,6 +29,18 @@ canonical_regular_file() {
   fi
   [[ -f "$candidate" && ! -L "$candidate" ]] || die "Expected a regular, non-symlink file: $candidate"
   printf '%s/%s\n' "$(cd "$(dirname "$candidate")" && pwd -P)" "$(basename "$candidate")"
+}
+
+canonical_directory() {
+  local input="$1"
+  local candidate
+  if [[ "$input" = /* ]]; then
+    candidate="$input"
+  else
+    candidate="$PWD/$input"
+  fi
+  [[ -d "$candidate" && ! -L "$candidate" ]] || die "Expected a directory, not a symlink: $candidate"
+  (cd "$candidate" && pwd -P)
 }
 
 validate_private_env_file() {
@@ -83,6 +96,9 @@ validate_release_bundle() {
   local manifest_commit
   local manifest_artifact
   local manifest_schema_version
+  local manifest_release_mode
+  local manifest_base_commit
+  local manifest_deployment_boundary
   local manifest_filename
   local manifest_filenames=()
   local bundle_entries=()
@@ -135,11 +151,31 @@ validate_release_bundle() {
   manifest_schema_version="$(awk '$1 == "\"schemaVersion\":" { gsub(/,/, "", $2); print $2 }' "$manifest_file")"
   manifest_artifact="$(awk -F'"' '$2 == "artifact" { print $4 }' "$manifest_file")"
   manifest_commit="$(awk -F'"' '$2 == "contractCommit" { print $4 }' "$manifest_file")"
+  manifest_release_mode="$(awk -F'"' '$2 == "releaseMode" { print $4 }' "$manifest_file")"
+  manifest_base_commit="$(awk -F'"' '$2 == "baseCommit" { print $4 }' "$manifest_file")"
+  manifest_deployment_boundary="$(awk -F'"' '$2 == "deploymentBoundary" { print $4 }' "$manifest_file")"
   mapfile -t manifest_filenames < <(awk -F'"' '$2 == "filename" { print $4 }' "$manifest_file")
   [[ "$manifest_schema_version" == 1 \
       && "$manifest_artifact" == sciforge-collaboration-server-bundle \
       && "$manifest_commit" == "$expected_commit" ]] \
     || die "RELEASE_MANIFEST.json metadata does not match the approved release."
+  case "$manifest_release_mode" in
+    origin-gui)
+      [[ -z "$manifest_base_commit" && -z "$manifest_deployment_boundary" ]] \
+        || die "origin-gui manifest must not carry private-release metadata."
+      ;;
+    private-test)
+      validate_commit "$manifest_base_commit"
+      [[ -z "$manifest_deployment_boundary" ]] \
+        || die "private-test manifest contains an unexpected deployment boundary."
+      ;;
+    team-private-acceptance)
+      validate_commit "$manifest_base_commit"
+      [[ "$manifest_deployment_boundary" == loopback-ssh-tunnel-only ]] \
+        || die "Team private acceptance must retain the loopback/SSH-tunnel boundary."
+      ;;
+    *) die "RELEASE_MANIFEST.json contains an unsupported release mode." ;;
+  esac
   (( ${#manifest_filenames[@]} == 3 )) \
     || die "RELEASE_MANIFEST.json must describe exactly three packages."
   for manifest_filename in "${manifest_filenames[@]}"; do
@@ -332,6 +368,95 @@ prepare_compose_environment() {
   export SCIFORGE_COLLAB_HOST_PORT="$host_port"
   export SCIFORGE_COLLAB_CONTRACT_COMMIT="$expected_commit"
   COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+}
+
+enable_zulip_provider_compose() {
+  local config_input
+  local secret_input
+  local config_file
+  local secret_directory
+  local permissions
+  local owner_id
+  local group_id
+  local secret_entries=()
+  local secret_file
+  local secret_name
+  local secret_size
+
+  [[ -n "${ENV_FILE:-}" ]] || die "Provider overlay requires a prepared Compose environment."
+  validate_provider_secret_group_isolation
+  [[ -f "$PROVIDER_COMPOSE_FILE" && ! -L "$PROVIDER_COMPOSE_FILE" ]] \
+    || die "Zulip provider Compose overlay is missing."
+  config_input="$(dotenv_value "$ENV_FILE" SCIFORGE_COLLAB_PROVIDER_CONFIG_FILE)"
+  secret_input="$(dotenv_value "$ENV_FILE" SCIFORGE_COLLAB_PROVIDER_SECRET_DIR)"
+  config_file="$(canonical_regular_file "$config_input")"
+  secret_directory="$(canonical_directory "$secret_input")"
+  [[ "$config_file" == /srv/sciforge-collaboration/provider/providers.json ]] \
+    || die "Provider config must resolve to /srv/sciforge-collaboration/provider/providers.json."
+  [[ "$secret_directory" == /srv/sciforge-collaboration/provider/secrets ]] \
+    || die "Provider secrets must resolve to /srv/sciforge-collaboration/provider/secrets."
+
+  permissions="$(stat -c '%a' "$config_file")"
+  owner_id="$(stat -c '%u' "$config_file")"
+  group_id="$(stat -c '%g' "$config_file")"
+  [[ "$permissions" == 640 && "$owner_id" == 0 && "$group_id" == 10001 ]] \
+    || die "Provider config must be root:10001 mode 0640."
+  permissions="$(stat -c '%a' "$secret_directory")"
+  owner_id="$(stat -c '%u' "$secret_directory")"
+  group_id="$(stat -c '%g' "$secret_directory")"
+  [[ "$permissions" == 750 && "$owner_id" == 0 && "$group_id" == 10001 ]] \
+    || die "Provider secret directory must be root:10001 mode 0750."
+
+  shopt -s nullglob dotglob
+  secret_entries=("$secret_directory"/*)
+  shopt -u nullglob dotglob
+  (( ${#secret_entries[@]} > 0 )) || die "Provider secret directory must contain at least one secret file."
+  for secret_file in "${secret_entries[@]}"; do
+    [[ -f "$secret_file" && ! -L "$secret_file" ]] \
+      || die "Provider secret directory may contain only regular, non-symlink files."
+    secret_name="$(basename "$secret_file")"
+    [[ "$secret_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] \
+      || die "Provider secret filename is outside the runtime reference contract."
+    permissions="$(stat -c '%a' "$secret_file")"
+    owner_id="$(stat -c '%u' "$secret_file")"
+    group_id="$(stat -c '%g' "$secret_file")"
+    [[ "$permissions" == 640 && "$owner_id" == 0 && "$group_id" == 10001 ]] \
+      || die "Every provider secret must be root:10001 mode 0640."
+    secret_size="$(stat -c '%s' "$secret_file")"
+    [[ "$secret_size" =~ ^[0-9]+$ ]] || die "Could not inspect provider secret size."
+    (( secret_size > 0 && secret_size <= 65536 )) \
+      || die "Every provider secret must be non-empty and no larger than 64 KiB."
+  done
+
+  export SCIFORGE_COLLAB_PROVIDER_CONFIG_FILE="$config_file"
+  export SCIFORGE_COLLAB_PROVIDER_SECRET_DIR="$secret_directory"
+  COMPOSE+=( -f "$PROVIDER_COMPOSE_FILE" )
+}
+
+validate_provider_secret_group_isolation() {
+  local protected_gid=10001
+  local account
+  local account_gid
+  local account_group_list
+
+  require_command getent
+  require_command id
+
+  # The container can read numeric-GID bind mounts without a host NSS group.
+  # Keep that GID completely unassigned on the host so no host service or
+  # login account inherits access to provider credentials.
+  if getent group "$protected_gid" > /dev/null; then
+    die "Provider runtime GID $protected_gid must not be assigned to a host group."
+  fi
+  while IFS=: read -r account _ _ account_gid _ _ _; do
+    [[ -n "$account" ]] || continue
+    [[ "$account_gid" != "$protected_gid" ]] \
+      || die "Host account $account must not use provider runtime GID $protected_gid."
+    account_group_list="$(id -G "$account")" \
+      || die "Could not resolve supplementary groups for host account $account."
+    [[ ! "$account_group_list" =~ (^|[[:space:]])${protected_gid}($|[[:space:]]) ]] \
+      || die "Host account $account must not belong to provider runtime GID $protected_gid."
+  done < <(getent passwd)
 }
 
 backup_directory_from_env() {

@@ -53,13 +53,14 @@ function usage() {
     '  --commit <40-char-sha>  Approved origin/gui commit (defaults to clean HEAD).',
     '  --output <directory>    Bundle destination (must be absent or empty).',
     '  --private-test-release  TEST-ONLY: allow a clean HEAD descended from origin/gui.',
+    '  --team-private-acceptance  TEAM-ONLY: clean descendant for loopback/tunnel acceptance.',
     '  -h, --help              Show this help.',
     ''
   ].join('\n')
 }
 
 export function parseArguments(argv) {
-  const result = { help: false, privateTestRelease: false }
+  const result = { help: false, privateTestRelease: false, teamPrivateAcceptance: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--help' || argument === '-h') {
@@ -73,6 +74,13 @@ export function parseArguments(argv) {
       result.privateTestRelease = true
       continue
     }
+    if (argument === '--team-private-acceptance') {
+      if (result.teamPrivateAcceptance) {
+        throw new Error('--team-private-acceptance may only be provided once.')
+      }
+      result.teamPrivateAcceptance = true
+      continue
+    }
     if (argument !== '--commit' && argument !== '--output') {
       throw new Error(`Unknown argument: ${argument}`)
     }
@@ -84,6 +92,9 @@ export function parseArguments(argv) {
     const property = argument === '--commit' ? 'commit' : 'outputDirectory'
     if (result[property]) throw new Error(`${argument} may only be provided once.`)
     result[property] = value
+  }
+  if (result.privateTestRelease && result.teamPrivateAcceptance) {
+    throw new Error('Private release modes are mutually exclusive.')
   }
   return result
 }
@@ -324,12 +335,20 @@ export async function buildCollaborationServerBundle({
   log = () => {},
   outputDirectory,
   privateTestRelease = false,
+  teamPrivateAcceptance = false,
   repositoryRoot = defaultRepositoryRoot,
   runCommand = defaultRunCommand
 } = {}) {
   if (typeof privateTestRelease !== 'boolean') {
     throw new Error('privateTestRelease must be an explicit boolean.')
   }
+  if (typeof teamPrivateAcceptance !== 'boolean') {
+    throw new Error('teamPrivateAcceptance must be an explicit boolean.')
+  }
+  if (privateTestRelease && teamPrivateAcceptance) {
+    throw new Error('Private release modes are mutually exclusive.')
+  }
+  const privateFeatureRelease = privateTestRelease || teamPrivateAcceptance
   const root = resolve(repositoryRoot)
   const headResult = await runCommand({
     command: gitCommand,
@@ -351,7 +370,7 @@ export async function buildCollaborationServerBundle({
     throw new Error('The collaboration release must be built from a clean worktree.')
   }
   let baseCommit
-  if (privateTestRelease) {
+  if (privateFeatureRelease) {
     const baseResult = await runCommand({
       command: gitCommand,
       args: ['rev-parse', '--verify', 'origin/gui^{commit}'],
@@ -366,7 +385,7 @@ export async function buildCollaborationServerBundle({
       })
     } catch (error) {
       throw new Error(
-        'Private test release HEAD must descend from the current origin/gui commit.',
+        `${teamPrivateAcceptance ? 'Team private acceptance' : 'Private test release'} HEAD must descend from the current origin/gui commit.`,
         { cause: error }
       )
     }
@@ -389,7 +408,10 @@ export async function buildCollaborationServerBundle({
   let published = false
 
   try {
-    if (privateTestRelease) {
+    if (teamPrivateAcceptance) {
+      log('*** TEAM-PRIVATE ACCEPTANCE: loopback + SSH tunnel only; never publish as production. ***')
+      log(`Verified clean team acceptance commit ${approvedCommit} descends from origin/gui ${baseCommit}.`)
+    } else if (privateTestRelease) {
       log('*** TEST-ONLY PRIVATE RELEASE: loopback-only A ECS; never publish as production. ***')
       log(`Verified clean feature commit ${approvedCommit} descends from origin/gui ${baseCommit}.`)
     } else {
@@ -496,8 +518,13 @@ export async function buildCollaborationServerBundle({
       schemaVersion: 1,
       artifact: 'sciforge-collaboration-server-bundle',
       contractCommit: approvedCommit,
-      releaseMode: privateTestRelease ? 'private-test' : 'origin-gui',
-      ...(privateTestRelease ? { baseCommit } : {}),
+      releaseMode: teamPrivateAcceptance
+        ? 'team-private-acceptance'
+        : privateTestRelease
+          ? 'private-test'
+          : 'origin-gui',
+      ...(privateFeatureRelease ? { baseCommit } : {}),
+      ...(teamPrivateAcceptance ? { deploymentBoundary: 'loopback-ssh-tunnel-only' } : {}),
       packageManager: {
         name: 'npm',
         lockfileVersion: lock.lockfileVersion
@@ -531,9 +558,11 @@ export async function buildCollaborationServerBundle({
       throw error
     }
     published = true
-    log(privateTestRelease
-      ? `Created TEST-ONLY private collaboration bundle at ${destination}.`
-      : `Created immutable collaboration release bundle at ${destination}.`)
+    log(teamPrivateAcceptance
+      ? `Created TEAM-PRIVATE acceptance collaboration bundle at ${destination}.`
+      : privateTestRelease
+        ? `Created TEST-ONLY private collaboration bundle at ${destination}.`
+        : `Created immutable collaboration release bundle at ${destination}.`)
     return Object.freeze({
       commit: approvedCommit,
       manifest,
@@ -555,7 +584,8 @@ if (invokedAsMain) {
         commit: arguments_.commit,
         log: (message) => process.stdout.write(`[collaboration-bundle] ${message}\n`),
         outputDirectory: arguments_.outputDirectory,
-        privateTestRelease: arguments_.privateTestRelease
+        privateTestRelease: arguments_.privateTestRelease,
+        teamPrivateAcceptance: arguments_.teamPrivateAcceptance
       })
     }
   } catch (error) {

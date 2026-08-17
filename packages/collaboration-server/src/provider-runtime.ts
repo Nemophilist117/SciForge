@@ -6,6 +6,7 @@ import {
   providerDiagnosticSchema,
   providerLocatorSchema,
   providerSendResultSchema,
+  redactCredentials,
   type HumanEndpointProvider,
   type HumanEndpointProviderContract,
   type HumanEndpointProviderHttpRequest,
@@ -151,6 +152,16 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
     if (this.abortController) return
     const abortController = new AbortController()
     this.abortController = abortController
+    try {
+      await Promise.all([...this.providers.values()].map((provider) => (
+        this.recordStartupDiagnostic(provider)
+      )))
+    } catch (error) {
+      if (this.abortController === abortController) this.abortController = undefined
+      abortController.abort()
+      throw error
+    }
+    if (this.abortController !== abortController || abortController.signal.aborted) return
     for (const provider of this.providers.values()) {
       this.track(this.runEventPump(provider, abortController.signal))
     }
@@ -414,6 +425,24 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
       details: { errorCode: classification.errorCode,
         ...(classification.errorClass ? { errorClass: classification.errorClass } : {}) }
     }))
+  }
+
+  private async recordStartupDiagnostic(provider: HumanEndpointProvider): Promise<void> {
+    try {
+      const diagnostic = providerDiagnosticSchema.parse(redactCredentials(await provider.diagnose()))
+      if (diagnostic.provider !== provider.contract.provider) {
+        throw new CollaborationServiceError(
+          'validation_failed',
+          'Provider diagnostic identity does not match the installed provider contract.'
+        )
+      }
+      await this.store.recordDiagnostic(providerDiagnosticSchema.parse({
+        ...diagnostic,
+        checkedAt: this.timestamp()
+      }))
+    } catch (error) {
+      await this.recordRuntimeFailure(provider.contract.provider, error)
+    }
   }
 
   private timestamp(): string {

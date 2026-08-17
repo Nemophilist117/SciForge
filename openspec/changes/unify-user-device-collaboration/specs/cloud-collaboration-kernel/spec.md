@@ -61,6 +61,13 @@ Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revis
 - **THEN** SHALL 返回已有 receipt
 - **AND** SHALL NOT 第二次改变状态或投递消息。
 
+#### Scenario: 使用新的关联 ID 重放相同业务请求
+
+- **WHEN** 客户端以相同 actor、idempotency key 和业务有效载荷重试，但使用新的 `requestId`
+- **THEN** 云端 SHALL 将 `requestId`、协议版本和 command discriminator 视为传输信封而非业务有效载荷
+- **AND** SHALL 返回与首次提交相同的业务结果，并在当前响应中使用新的 `requestId`
+- **AND** SHALL NOT 再次改变状态、写审计副作用或投递 InboxMessage。
+
 ### Requirement: 云端共享记忆严格分区
 
 云端 SHALL 保存 Project 正式 observation、decision、summary 和被接受的 TaskResult 摘要，并按成员和角色控制访问。完整个人 Session、本地工具日志、凭据和原始数据 SHALL NOT 自动进入 Project Record。
@@ -70,6 +77,12 @@ Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revis
 - **WHEN** 当前 assignee 提交 TaskResult 或 observation
 - **THEN** 云端 SHALL 保留作者 user/agent、Task、revision 和时间
 - **AND** Coordinator SHALL 决定是否接受为正式 Project Record。
+
+#### Scenario: Project 成员读取共享记录
+
+- **WHEN** active Project member user 或 Agent 使用 `project_record.get` 读取已知的 ProjectRecord
+- **THEN** 云端 SHALL 返回受合同约束的 `project_record` entity
+- **AND** system、Human Endpoint 和非成员 SHALL 被拒绝且不得获得记录内容。
 
 #### Scenario: 其他用户读取私人 Session
 
@@ -125,6 +138,25 @@ PoC SHALL 使用一个服务、一个 PostgreSQL 事实库和一个 WebSocket �
 - **THEN** 云端 SHALL 原子保存终态与结果摘要
 - **AND** Project 成员通过当前 Task revision SHALL 能读取该摘要
 - **AND** 旧 assignee 或旧 revision SHALL NOT 覆盖当前结果。
+
+### Requirement: Coordinator 可显式重试或改派终态失败 Task
+
+云端 SHALL 暴露单一 `task.retry` 公共命令，由当前 Coordinator Agent 为 `failed` 或 `rejected`
+Task 指定下一次执行的 assignee。相同 assignee 表示重试，不同 assignee 表示改派；操作 SHALL 在同一事务中
+锁定 Project 与 Task、验证 expected revision 和重试预算、清除上一 attempt 的进度与结果，并只向新 assignee
+投递一条 `task.offered`。
+
+#### Scenario: Coordinator 改派失败 Task
+
+- **WHEN** 当前 Coordinator 对 failed Task 提交新的成员 Agent 和当前 revision
+- **THEN** Task SHALL 保持同一 taskId、递增 attempt/revision 并回到 offered
+- **AND** 旧 assignee 后续进度、资源和结果写入 SHALL 被拒绝。
+
+#### Scenario: 两个请求竞争同一改派
+
+- **WHEN** 两个不同幂等请求使用相同 expected revision 竞争重试或改派
+- **THEN** 最多一个请求 SHALL 成功并产生一条新 offer
+- **AND** 失败请求 SHALL 返回包含 current revision 的 typed conflict。
 
 ### Requirement: ResourceRef 只保存安全资源引用
 

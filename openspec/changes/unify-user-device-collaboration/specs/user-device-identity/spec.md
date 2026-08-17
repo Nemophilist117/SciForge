@@ -88,3 +88,16 @@ Provider service credential、Agent device token、一次性 challenge 和本地
 - **WHEN** UI 请求用户、端点和 Agent 状态
 - **THEN** 返回值 SHALL 只包含非敏感 ID、显示信息、状态、assurance 和时间
 - **AND** SHALL NOT 包含 credential 或可逆凭据片段。
+
+### Requirement: 当前应用凭据可以自撤销
+
+已认证 User 或 Agent SHALL 能通过 `credential.revoke_current` 只撤销本次请求所使用的 bearer credential。
+服务器 SHALL 从认证上下文取得 credential identity，SHALL NOT 接受请求体自报 credential ID，且成功响应
+SHALL NOT 回显 token。撤销 SHALL 与 receipt、审计原子提交。
+
+#### Scenario: User 撤销当前 Bearer
+
+- **WHEN** User 使用有效 Bearer 调用 `credential.revoke_current`
+- **THEN** 当前请求 SHALL 返回一次不含凭据的成功 receipt
+- **AND** 同一 Bearer 的后续请求 SHALL 返回 `credential_revoked`
+- **AND** 该用户的其他 endpoint 或 Agent credential SHALL 保持不变。

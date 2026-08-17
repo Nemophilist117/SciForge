@@ -16,6 +16,7 @@
 - [x] 2.4 实现 ParticipantProfile，允许用户从自己拥有的端点和 Agent 中显式选择 primary，禁止最近在线或跨用户回退。
 - [x] 2.5 增加身份冲突、显示名修改、重复 challenge、端点被盗、Agent 被盗、owner 转移和撤销后的安全测试。
 - [x] 2.6 审计 settings、日志、诊断、二维码、测试 fixture、导出和 Git 文件，确保不存在长期 token、API key、challenge、密码或私钥。
+- [x] 2.7 实现 `credential.revoke_current`，只从认证上下文撤销当前 User/Agent Bearer，并验证其他凭据不受影响。
 
 ## 3. 云端协作内核
 
@@ -28,6 +29,8 @@
 - [x] 3.7 实现 Project 成员可读的最小 Agent capability directory，隐藏凭据、installation identity 和本地运行时详情。
 - [x] 3.8 实现当前 assignee 的结构化 Task progress 与可查询结果摘要，复用 revision、幂等、审计和 Coordinator inbox。
 - [x] 3.9 实现 provider-neutral ResourceRef 创建、查询和失效，严格拒绝正文、凭据、非 HTTPS URL 与本地绝对路径。
+- [x] 3.10 暴露 Coordinator-only `task.retry`，以单事务完成重试/改派、预算、并发冲突和旧 assignee 拒绝。
+- [x] 3.11 处理 PostgreSQL idle client error，保证数据库重启不退出应用且日志不展开 Client、连接参数或 secretKey。
 
 ## 4. Zulip 与 Human Gateway
 
@@ -37,6 +40,7 @@
 - [x] 4.4 实现 ProjectInput 创建、member/role 验证、provider message dedupe 和 Coordinator inbox 路由。
 - [x] 4.5 实现 targetUserId HumanNeeded、primary endpoint 路由、HumanAnswer receipt、过期回答和无端点 pending 行为。
 - [x] 4.6 增加通知过滤，只向手机发送个人 Session、人类问题、允许的审批、重要失败/摘要和最终结果。
+- [x] 4.7 启动时运行并持久化 Provider 脱敏诊断，为 provider-enabled 发布提供独立健康门禁。
 
 ## 5. SciForge 协作领域包
 
@@ -88,3 +92,6 @@
 - [x] 10.5 运行 package boundary、generated composition freshness、capability governance、typecheck、focused/full tests、changed-file lint 和 packaged smoke tests。
 - [x] 10.6 更新中文用户及运维文档，区分 User、手机端点、Agent、个人 Session、Project topic、Task、在线依赖、权限保证和故障恢复。
 - [x] 10.7 发布 A 最小公共 API 中文说明与真实请求示例，覆盖身份、Project/成员、能力、Task 路由、进度、结果、消息、人工确认和 ResourceRef。
+- [x] 10.8 实现 team-private-acceptance 固定 bundle、Provider overlay、数据库重启验收和独立 tunnel-only 账号资产。
+- [ ] 10.9 在 A 专用 ECS 通过公开 HTTP/WSS 与正式 Zulip Provider 完成 Owner/Member、双 Agent、Project、Task/Human/Resource/Record、改派和凭据撤销闭环。
+- [ ] 10.10 发布两份脱敏团队连接文档，并为 B–E 配置各自限时 Tunnel 与正式 pairing 身份。

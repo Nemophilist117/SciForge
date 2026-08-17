@@ -23,11 +23,14 @@ backup_parent="$(dirname "$backup_dir")"
   || die "Backup parent must be the real /srv/sciforge-collaboration directory."
 [[ ! -L "$backup_dir" ]] || die "Backup directory must not be a symlink."
 umask 077
-install -d -m 0700 -- "$backup_dir"
+install -d -o root -g root -m 0700 -- "$backup_dir"
 backup_dir="$(cd "$backup_dir" && pwd -P)"
 [[ "$backup_dir" == /srv/sciforge-collaboration/backups ]] \
   || die "Backup directory resolved outside the dedicated backup root."
-chmod 0700 -- "$backup_dir"
+backup_permissions="$(stat -c '%a' "$backup_dir")"
+backup_owner="$(stat -c '%u:%g' "$backup_dir")"
+[[ "$backup_permissions" == 700 && "$backup_owner" == 0:0 ]] \
+  || die "Backup directory must be root:root mode 0700."
 
 exec 9>"$backup_dir/.backup.lock"
 if ! flock -n 9; then

@@ -3,10 +3,144 @@ import { describe, expect, it } from 'vitest'
 import { digestSecret } from './crypto.js'
 import { COLLABORATION_SCHEMA_VERSION, runCollaborationMigrations } from './migrations.js'
 import type { StoredResourceRef, StoredTask } from './model.js'
-import { PostgresCollaborationRepository, type SqlConnection, type SqlPool } from './postgres.js'
+import {
+  createPostgresPool,
+  formatPostgresPoolDiagnostic,
+  PostgresCollaborationRepository,
+  type PostgresPoolDiagnostic,
+  type SqlConnection,
+  type SqlPool
+} from './postgres.js'
 import { CollaborationService } from './service.js'
 
+describe('PostgreSQL pool diagnostics', () => {
+  it.each([
+    ['57P01', true],
+    ['57P02', true],
+    ['57P03', true],
+    ['08006', true],
+    ['23505', false]
+  ] as const)('handles idle-client SQLSTATE %s without exposing the error or client', async (code, retryable) => {
+    const sensitiveMarker = `POOL_SECRET_${code}`
+    const diagnostics: PostgresPoolDiagnostic[] = []
+    const pool = createPostgresPool({
+      connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused',
+      onPoolDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+    })
+    const eventedPool = pool as SqlPool & {
+      emit(event: 'error', error: unknown, client: unknown): boolean
+      listenerCount(event: 'error'): number
+    }
+
+    expect(eventedPool.listenerCount('error')).toBeGreaterThan(0)
+    expect(() => eventedPool.emit('error', Object.assign(new Error(sensitiveMarker), {
+      code,
+      stack: `stack:${sensitiveMarker}`,
+      connectionParameters: { password: sensitiveMarker }
+    }), { secretKey: sensitiveMarker })).not.toThrow()
+
+    expect(diagnostics).toEqual([{
+      event: 'postgres.pool.idle_client_error',
+      postgresCode: code,
+      retryable
+    }])
+    expect(JSON.stringify(diagnostics)).not.toContain(sensitiveMarker)
+    await pool.end()
+  })
+
+  it('normalizes malformed SQLSTATE values, swallows diagnostic sink failures, and emits safe one-line JSON', async () => {
+    const sensitiveMarker = 'POOL_SECRET_MALFORMED'
+    const diagnostics: PostgresPoolDiagnostic[] = []
+    const pool = createPostgresPool({
+      connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused',
+      onPoolDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+    })
+    const eventedPool = pool as SqlPool & {
+      emit(event: 'error', error: unknown, client: unknown): boolean
+    }
+
+    expect(() => eventedPool.emit('error', {
+      code: `57P01\n${sensitiveMarker}`,
+      message: sensitiveMarker,
+      stack: sensitiveMarker
+    }, { secretKey: sensitiveMarker })).not.toThrow()
+    expect(diagnostics).toEqual([{
+      event: 'postgres.pool.idle_client_error',
+      postgresCode: 'unknown',
+      retryable: false
+    }])
+
+    const throwingSinkPool = createPostgresPool({
+      connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused',
+      onPoolDiagnostic: () => { throw new Error(sensitiveMarker) }
+    }) as SqlPool & { emit(event: 'error', error: unknown, client: unknown): boolean }
+    expect(() => throwingSinkPool.emit('error', { code: '57P01' }, { secretKey: sensitiveMarker })).not.toThrow()
+
+    const noSinkPool = createPostgresPool({
+      connectionString: 'postgresql://unused:unused@127.0.0.1:1/unused'
+    }) as SqlPool & { emit(event: 'error', error: unknown, client: unknown): boolean }
+    expect(() => noSinkPool.emit('error', { code: '57P01' }, { secretKey: sensitiveMarker })).not.toThrow()
+
+    const line = formatPostgresPoolDiagnostic({
+      ...diagnostics[0],
+      rawError: sensitiveMarker,
+      client: { secretKey: sensitiveMarker }
+    } as PostgresPoolDiagnostic, new Date('2026-08-17T03:00:00.000Z'))
+    expect(line.endsWith('\n')).toBe(true)
+    expect(line.slice(0, -1)).not.toContain('\n')
+    expect(JSON.parse(line)).toEqual({
+      occurredAt: '2026-08-17T03:00:00.000Z',
+      level: 'error',
+      component: 'postgres',
+      event: 'postgres.pool.idle_client_error',
+      postgresCode: 'unknown',
+      retryable: false
+    })
+    expect(line).not.toContain(sensitiveMarker)
+    expect(line).not.toContain('secretKey')
+    await pool.end()
+    await throwingSinkPool.end()
+    await noSinkPool.end()
+  })
+})
+
 describe('PostgreSQL production transaction path', () => {
+  it('revokes only the selected live credential and reports an already-revoked credential', async () => {
+    const writes: Array<{ text: string; values: readonly unknown[] }> = []
+    let revokeAttempt = 0
+    const connection: SqlConnection = {
+      query: async (text, values = []) => {
+        writes.push({ text, values })
+        if (text.includes('UPDATE sciforge_collaboration.credentials')) {
+          revokeAttempt += 1
+          return { rows: [], rowCount: revokeAttempt === 1 ? 1 : 0 }
+        }
+        return { rows: [], rowCount: 0 }
+      },
+      release: () => undefined
+    }
+    const repository = new PostgresCollaborationRepository({
+      query: async () => ({ rows: [], rowCount: 0 }),
+      connect: async () => connection,
+      end: async () => undefined
+    })
+    const revokedAt = '2026-08-17T03:00:00.000Z'
+
+    await repository.transaction(async (tx) => {
+      await expect(tx.revokeCredential('crd_SelectedCredential1', revokedAt)).resolves.toBe(true)
+      await expect(tx.revokeCredential('crd_SelectedCredential1', revokedAt)).resolves.toBe(false)
+    })
+
+    const revocations = writes.filter(({ text }) => text.includes('UPDATE sciforge_collaboration.credentials'))
+    expect(revocations).toHaveLength(2)
+    for (const revocation of revocations) {
+      expect(revocation.text).toContain('WHERE credential_id=$1 AND revoked_at IS NULL')
+      expect(revocation.text).not.toContain('subject_user_id')
+      expect(revocation.text).not.toContain('subject_agent_id')
+      expect(revocation.values).toEqual(['crd_SelectedCredential1', revokedAt])
+    }
+  })
+
   it('runs the ordered ResourceRef and Task progress migrations through schema version 3', async () => {
     const migrations: string[] = []
     const pool: SqlPool = {

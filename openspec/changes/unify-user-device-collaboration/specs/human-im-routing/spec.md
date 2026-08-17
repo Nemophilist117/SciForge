@@ -90,3 +90,16 @@ Provider-specific authentication、event、locator、send、rename 和 lifecycle
 - **WHEN** composition 发现兼容 provider contribution
 - **THEN** Gateway SHALL 可使用该 provider
 - **AND** SHALL 不要求修改中央 provider map 或 Host-private 配置。
+
+### Requirement: Provider 启动诊断可被部署门禁验证
+
+启用 Provider 的 Collaboration Server SHALL 在每次 runtime 启动时调用已安装 Provider 的标准
+`diagnose` 能力，并把脱敏 diagnostic 持久化。数据库 readiness SHALL 保持只表达 canonical PostgreSQL
+状态；部署门禁 SHALL 另行要求预期 Provider catalog 与本次启动后的 healthy diagnostic。
+
+#### Scenario: Zulip Bot 凭据无效
+
+- **WHEN** Provider runtime 启动诊断无法验证 Bot
+- **THEN** 系统 SHALL 持久化不含 credential、请求头或远端响应正文的 unavailable diagnostic
+- **AND** provider-enabled 发布 SHALL 不得通过验收
+- **AND** `/readyz` SHALL NOT 冒充 Provider 健康证明。
