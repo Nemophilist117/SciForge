@@ -145,11 +145,11 @@ describe('CollaborationService canonical transactions', () => {
       memberUserIds: [alice.userId, bob.userId], coordinatorAgentId: aliceAgent.agent.agentId,
       budgets: { maxTasks: 4, maxTasksPerRound: 2, maxTaskRetries: 1, maxCoordinationRounds: 2 },
       idempotencyKey: 'idem_project_create_shared' })
-    const task = await service.createTask(aliceDevice, { projectId: project.projectId,
+    const task = await service.createTask(alice.user, { projectId: project.projectId,
       assigneeAgentId: bobAgent.agent.agentId, title: '分析数据', objective: '返回有界结果摘要',
       completionCriteria: ['结果可复核'], dependencyTaskIds: [], expectedProjectRevision: project.revision,
       idempotencyKey: 'idem_task_create_bob_01' })
-    const repeated = await service.createTask(aliceDevice, { projectId: project.projectId,
+    const repeated = await service.createTask(alice.user, { projectId: project.projectId,
       assigneeAgentId: bobAgent.agent.agentId, title: '分析数据', objective: '返回有界结果摘要',
       completionCriteria: ['结果可复核'], dependencyTaskIds: [], expectedProjectRevision: project.revision,
       idempotencyKey: 'idem_task_create_bob_01' })
@@ -175,6 +175,269 @@ describe('CollaborationService canonical transactions', () => {
     )
   })
 
+  it('requires the owner for assignment, reassignment, cancellation, and formal Project conclusions', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const owner = await onboard(service, authentication, 'governance-owner', 'provider-governance-owner')
+    const member = await onboard(service, authentication, 'governance-member', 'provider-governance-member')
+    const ownerAgent = await registerAgent(service, owner.user, 'governanceo1')
+    const memberAgent = await registerAgent(service, member.user, 'governancem1')
+    const coordinator = await authentication.resolveBearer(ownerAgent.deviceCredential!)
+    const worker = await authentication.resolveBearer(memberAgent.deviceCredential!)
+    if (coordinator.kind !== 'agent_device' || worker.kind !== 'agent_device') throw new Error('Expected Agent actors')
+    const project = await service.createProject(owner.user, {
+      displayName: 'Human-governed assignment', goal: 'Keep personnel and conclusions under owner authority.',
+      memberUserIds: [owner.userId, member.userId], coordinatorAgentId: ownerAgent.agent.agentId,
+      idempotencyKey: 'idem_governance_project_01'
+    })
+    const taskInput = {
+      projectId: project.projectId, assigneeAgentId: memberAgent.agent.agentId,
+      title: 'Owner-confirmed assignment', objective: 'Exercise the A-only authorization boundary.',
+      completionCriteria: ['Every governed mutation records the correct actor'], dependencyTaskIds: [],
+      expectedProjectRevision: project.revision
+    }
+    await expect(service.createTask(coordinator, {
+      ...taskInput, idempotencyKey: 'idem_governance_agent_create_denied_01'
+    })).rejects.toMatchObject({ code: 'permission_denied' })
+    const task = await service.createTask(owner.user, {
+      ...taskInput, idempotencyKey: 'idem_governance_owner_create_01'
+    })
+    expect(task.createdByAgentId).toBe(ownerAgent.agent.agentId)
+
+    const accepted = await service.transitionTask(worker, { taskId: task.taskId, status: 'accepted',
+      expectedRevision: task.revision, idempotencyKey: 'idem_governance_accept_01' })
+    const running = await service.transitionTask(worker, { taskId: task.taskId, status: 'in_progress',
+      expectedRevision: accepted.revision, idempotencyKey: 'idem_governance_run_01' })
+    const failed = await service.transitionTask(worker, { taskId: task.taskId, status: 'failed',
+      expectedRevision: running.revision, safeFailureCode: 'retry_required',
+      idempotencyKey: 'idem_governance_fail_01' })
+    const retried = await service.retryOrReassignTask(coordinator, { taskId: task.taskId,
+      assigneeAgentId: memberAgent.agent.agentId, expectedRevision: failed.revision,
+      idempotencyKey: 'idem_governance_coordinator_same_retry_01' })
+    const retryAccepted = await service.transitionTask(worker, { taskId: task.taskId, status: 'accepted',
+      expectedRevision: retried.revision, idempotencyKey: 'idem_governance_retry_accept_01' })
+    const retryRunning = await service.transitionTask(worker, { taskId: task.taskId, status: 'in_progress',
+      expectedRevision: retryAccepted.revision, idempotencyKey: 'idem_governance_retry_run_01' })
+    const retryFailed = await service.transitionTask(worker, { taskId: task.taskId, status: 'failed',
+      expectedRevision: retryRunning.revision, safeFailureCode: 'reassignment_required',
+      idempotencyKey: 'idem_governance_retry_fail_01' })
+    await expect(service.retryOrReassignTask(coordinator, { taskId: task.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: retryFailed.revision,
+      idempotencyKey: 'idem_governance_coordinator_reassign_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    const reassigned = await service.retryOrReassignTask(owner.user, { taskId: task.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: retryFailed.revision,
+      idempotencyKey: 'idem_governance_owner_reassign_01' })
+    await expect(service.cancelTask(coordinator, { taskId: task.taskId, expectedRevision: reassigned.revision,
+      idempotencyKey: 'idem_governance_coordinator_cancel_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.cancelTask(owner.user, { taskId: task.taskId, expectedRevision: reassigned.revision,
+      idempotencyKey: 'idem_governance_owner_cancel_01' })).resolves.toMatchObject({ status: 'cancelled' })
+
+    const observation = await service.submitProjectRecord(member.user, { projectId: project.projectId,
+      kind: 'observation', summary: 'A bounded observation.', idempotencyKey: 'idem_governance_observation_01' })
+    await expect(service.acceptProjectRecord(coordinator, { projectRecordId: observation.projectRecordId,
+      expectedRevision: observation.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_observation_accept_01' })).resolves.toMatchObject({ status: 'accepted' })
+    const disguisedSummary = await service.submitProjectRecord(member.user, { projectId: project.projectId,
+      kind: 'observation', summary: 'An observation must not be upgraded by an Agent.',
+      idempotencyKey: 'idem_governance_disguised_summary_01' })
+    await expect(service.acceptProjectRecord(coordinator, { projectRecordId: disguisedSummary.projectRecordId,
+      acceptedKind: 'summary', expectedRevision: disguisedSummary.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_disguised_summary_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    const proposal = await service.submitProjectRecord(member.user, { projectId: project.projectId,
+      kind: 'proposal', summary: 'A candidate final conclusion.', idempotencyKey: 'idem_governance_proposal_01' })
+    await expect(service.acceptProjectRecord(coordinator, { projectRecordId: proposal.projectRecordId,
+      expectedRevision: proposal.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_coordinator_proposal_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.acceptProjectRecord(coordinator, { projectRecordId: proposal.projectRecordId,
+      acceptedKind: 'observation', expectedRevision: proposal.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_coordinator_proposal_downgrade_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.acceptProjectRecord(owner.user, { projectRecordId: proposal.projectRecordId,
+      expectedRevision: proposal.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_owner_proposal_accept_01' }))
+      .resolves.toMatchObject({ status: 'accepted', kind: 'decision', acceptedByUserId: owner.userId })
+    const summary = await service.submitProjectRecord(coordinator, { projectId: project.projectId,
+      kind: 'summary', summary: 'A candidate final summary.', idempotencyKey: 'idem_governance_summary_01' })
+    await expect(service.acceptProjectRecord(coordinator, { projectRecordId: summary.projectRecordId,
+      expectedRevision: summary.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_coordinator_summary_denied_01' }))
+      .rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.acceptProjectRecord(owner.user, { projectRecordId: summary.projectRecordId,
+      expectedRevision: summary.revision, decision: 'accepted',
+      idempotencyKey: 'idem_governance_owner_summary_accept_01' }))
+      .resolves.toMatchObject({ status: 'accepted', acceptedByUserId: owner.userId })
+  })
+
+  it('lets the owner proactively reassign active Tasks and expires every pending HumanNeeded request', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const owner = await onboard(service, authentication, 'proactive-owner', 'provider-proactive-owner')
+    const member = await onboard(service, authentication, 'proactive-member', 'provider-proactive-member')
+    const ownerAgent = await registerAgent(service, owner.user, 'proactiveo1')
+    const workerAgent = await registerAgent(service, member.user, 'proactivem1')
+    const coordinator = await authentication.resolveBearer(ownerAgent.deviceCredential!)
+    const worker = await authentication.resolveBearer(workerAgent.deviceCredential!)
+    if (coordinator.kind !== 'agent_device' || worker.kind !== 'agent_device') throw new Error('Expected Agent actors')
+    const project = await service.createProject(owner.user, {
+      displayName: 'Proactive reassignment', goal: 'Keep an owner-controlled current execution route.',
+      memberUserIds: [owner.userId, member.userId], coordinatorAgentId: ownerAgent.agent.agentId,
+      budgets: { maxTasks: 20, maxTasksPerRound: 20, maxTaskRetries: 2, maxCoordinationRounds: 2 },
+      idempotencyKey: 'idem_proactive_project_01'
+    })
+    const createWorkerTask = async (label: string) => {
+      const currentProject = (await service.getProject(owner.user, project.projectId)).project
+      return service.createTask(owner.user, {
+        projectId: project.projectId, assigneeAgentId: workerAgent.agent.agentId,
+        title: `Proactive ${label}`, objective: `Reach ${label} before an owner reassignment.`,
+        completionCriteria: ['Only the new assignee remains authorized'], dependencyTaskIds: [],
+        expectedProjectRevision: currentProject.revision, idempotencyKey: `idem_proactive_create_${label}`
+      })
+    }
+    const prepareTask = async (label: string, status: 'offered' | 'accepted' | 'in_progress' | 'failed' | 'rejected') => {
+      let task = await createWorkerTask(label)
+      if (status === 'rejected') {
+        return service.transitionTask(worker, { taskId: task.taskId, status: 'rejected',
+          expectedRevision: task.revision, idempotencyKey: `idem_proactive_reject_${label}` })
+      }
+      if (status !== 'offered') {
+        task = await service.transitionTask(worker, { taskId: task.taskId, status: 'accepted',
+          expectedRevision: task.revision, idempotencyKey: `idem_proactive_accept_${label}` })
+      }
+      if (status === 'in_progress' || status === 'failed') {
+        task = await service.transitionTask(worker, { taskId: task.taskId, status: 'in_progress',
+          expectedRevision: task.revision, idempotencyKey: `idem_proactive_run_${label}` })
+      }
+      if (status === 'failed') {
+        task = await service.transitionTask(worker, { taskId: task.taskId, status: 'failed',
+          expectedRevision: task.revision, safeFailureCode: 'worker_failed',
+          idempotencyKey: `idem_proactive_fail_${label}` })
+      }
+      return task
+    }
+
+    for (const status of ['offered', 'accepted', 'in_progress', 'failed', 'rejected'] as const) {
+      const task = await prepareTask(status, status)
+      const reassigned = await service.retryOrReassignTask(owner.user, {
+        taskId: task.taskId, assigneeAgentId: ownerAgent.agent.agentId,
+        expectedRevision: task.revision, idempotencyKey: `idem_proactive_reassign_${status}`
+      })
+      expect(reassigned).toMatchObject({ status: 'offered', assigneeAgentId: ownerAgent.agent.agentId,
+        retryCount: 1, revision: task.revision + 1 })
+      expect(reassigned.progress).toBeUndefined()
+      expect(reassigned.resultSummary).toBeUndefined()
+      expect(reassigned.safeFailureCode).toBeUndefined()
+      expect(reassigned.completedAt).toBeUndefined()
+      await expect(service.transitionTask(worker, { taskId: task.taskId, status: 'accepted',
+        expectedRevision: reassigned.revision, idempotencyKey: `idem_proactive_old_worker_${status}` }))
+        .rejects.toMatchObject({ code: 'permission_denied' })
+    }
+
+    const activeSameAssignee = await createWorkerTask('same-assignee-active')
+    await expect(service.retryOrReassignTask(owner.user, {
+      taskId: activeSameAssignee.taskId, assigneeAgentId: workerAgent.agent.agentId,
+      expectedRevision: activeSameAssignee.revision, idempotencyKey: 'idem_proactive_same_assignee_active_01'
+    })).rejects.toMatchObject({ code: 'invalid_state_transition' })
+    await expect(service.retryOrReassignTask(coordinator, {
+      taskId: activeSameAssignee.taskId, assigneeAgentId: ownerAgent.agent.agentId,
+      expectedRevision: activeSameAssignee.revision, idempotencyKey: 'idem_proactive_coordinator_active_reassign_01'
+    })).rejects.toMatchObject({ code: 'permission_denied' })
+
+    let humanTask = await createWorkerTask('needs-human')
+    humanTask = await service.transitionTask(worker, { taskId: humanTask.taskId, status: 'accepted',
+      expectedRevision: humanTask.revision, idempotencyKey: 'idem_proactive_human_accept_01' })
+    humanTask = await service.transitionTask(worker, { taskId: humanTask.taskId, status: 'in_progress',
+      expectedRevision: humanTask.revision, idempotencyKey: 'idem_proactive_human_run_01' })
+    humanTask = await service.reportTaskProgress(worker, { taskId: humanTask.taskId,
+      expectedRevision: humanTask.revision, percent: 45, summary: 'Waiting for two bounded confirmations.',
+      idempotencyKey: 'idem_proactive_human_progress_01' })
+    const firstRequest = await service.createHumanNeeded(worker, {
+      projectId: project.projectId, taskId: humanTask.taskId, expectedTaskRevision: humanTask.revision,
+      targetUserId: member.userId, requiredAssurance: 'verified', prompt: 'Continue the first branch?',
+      expiresAt: '2026-08-15T03:00:00.000Z', idempotencyKey: 'idem_proactive_human_first_01'
+    })
+    humanTask = await service.getTask(owner.user, humanTask.taskId)
+    const secondRequest = await service.createHumanNeeded(worker, {
+      projectId: project.projectId, taskId: humanTask.taskId, expectedTaskRevision: humanTask.revision,
+      targetUserId: member.userId, requiredAssurance: 'verified', prompt: 'Continue the second branch?',
+      expiresAt: '2026-08-15T03:00:00.000Z', idempotencyKey: 'idem_proactive_human_second_01'
+    })
+    const humanReassigned = await service.retryOrReassignTask(owner.user, {
+      taskId: humanTask.taskId, assigneeAgentId: ownerAgent.agent.agentId,
+      expectedRevision: humanTask.revision, idempotencyKey: 'idem_proactive_human_reassign_01'
+    })
+    expect(humanReassigned).toMatchObject({ status: 'offered', assigneeAgentId: ownerAgent.agent.agentId,
+      retryCount: 1, revision: humanTask.revision + 1 })
+    expect(humanReassigned.progress).toBeUndefined()
+    for (const request of [firstRequest, secondRequest]) {
+      expect(repository.state.humanRequests.get(request.humanRequestId)).toMatchObject({
+        status: 'cancelled', revision: request.revision + 1, updatedAt: at.toISOString()
+      })
+      await expect(service.answerHumanNeeded(member.endpoint, {
+        humanRequestId: request.humanRequestId, requestRevision: request.revision, answer: 'Too late',
+        idempotencyKey: `idem_proactive_expired_answer_${request.humanRequestId}`
+      })).rejects.toMatchObject({ code: 'request_expired' })
+    }
+    expect(repository.state.humanAnswers.size).toBe(0)
+    await expect(service.reportTaskProgress(worker, { taskId: humanTask.taskId,
+      expectedRevision: humanReassigned.revision, percent: 50, summary: 'Stale worker progress.',
+      idempotencyKey: 'idem_proactive_old_progress_01' })).rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.createResourceRef(worker, {
+      projectId: project.projectId, taskId: humanTask.taskId, expectedTaskRevision: humanReassigned.revision,
+      provider: 'example-content', externalId: 'stale-worker-resource', kind: 'shared_document',
+      name: 'Stale worker resource', openUrl: 'https://content.example.invalid/stale-worker-resource',
+      idempotencyKey: 'idem_proactive_old_resource_01'
+    })).rejects.toMatchObject({ code: 'permission_denied' })
+    await expect(service.transitionTask(worker, { taskId: humanTask.taskId, status: 'completed',
+      expectedRevision: humanReassigned.revision, resultSummary: 'Stale worker result.',
+      idempotencyKey: 'idem_proactive_old_result_01' })).rejects.toMatchObject({ code: 'permission_denied' })
+    const newOffers = (await repository.pullInbox(
+      { kind: 'agent', id: ownerAgent.agent.agentId }, 0, 100, at.toISOString()
+    )).filter((message) => message.messageType === 'task.offered' && message.payload.taskId === humanTask.taskId)
+    expect(newOffers).toHaveLength(1)
+    expect(newOffers[0]?.payload.revision).toBe(humanReassigned.revision)
+
+    const completedTask = await prepareTask('completed-terminal', 'in_progress')
+    const completed = await service.transitionTask(worker, { taskId: completedTask.taskId, status: 'completed',
+      expectedRevision: completedTask.revision, resultSummary: 'Terminal result.',
+      idempotencyKey: 'idem_proactive_complete_terminal_01' })
+    await expect(service.retryOrReassignTask(owner.user, { taskId: completed.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: completed.revision,
+      idempotencyKey: 'idem_proactive_completed_reassign_01' }))
+      .rejects.toMatchObject({ code: 'invalid_state_transition' })
+    const cancelledTask = await createWorkerTask('cancelled-terminal')
+    const cancelled = await service.cancelTask(owner.user, { taskId: cancelledTask.taskId,
+      expectedRevision: cancelledTask.revision, idempotencyKey: 'idem_proactive_cancel_terminal_01' })
+    await expect(service.retryOrReassignTask(owner.user, { taskId: cancelled.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: cancelled.revision,
+      idempotencyKey: 'idem_proactive_cancelled_reassign_01' }))
+      .rejects.toMatchObject({ code: 'invalid_state_transition' })
+
+    const concurrentTask = await createWorkerTask('concurrent-active')
+    const competing = await Promise.allSettled([
+      service.retryOrReassignTask(owner.user, { taskId: concurrentTask.taskId,
+        assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: concurrentTask.revision,
+        idempotencyKey: 'idem_proactive_concurrent_first_01' }),
+      service.retryOrReassignTask(owner.user, { taskId: concurrentTask.taskId,
+        assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: concurrentTask.revision,
+        idempotencyKey: 'idem_proactive_concurrent_second_01' })
+    ])
+    expect(competing.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(competing.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(competing.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'revision_conflict', details: { currentRevision: concurrentTask.revision + 1 } }
+    })
+    const concurrentOffers = (await repository.pullInbox(
+      { kind: 'agent', id: ownerAgent.agent.agentId }, 0, 200, at.toISOString()
+    )).filter((message) => message.messageType === 'task.offered' && message.payload.taskId === concurrentTask.taskId)
+    expect(concurrentOffers).toHaveLength(1)
+  })
+
   it('stores only governed ResourceRef metadata with idempotent invalidation', async () => {
     const repository = new FakeCollaborationRepository()
     const service = new CollaborationService({ repository, now })
@@ -195,7 +458,7 @@ describe('CollaborationService canonical transactions', () => {
       coordinatorAgentId: aliceAgent.agent.agentId,
       idempotencyKey: 'idem_resource_project_create_01'
     })
-    const task = await service.createTask(aliceDevice, {
+    const task = await service.createTask(alice.user, {
       projectId: project.projectId,
       assigneeAgentId: bobAgent.agent.agentId,
       title: 'Publish reference',
@@ -309,7 +572,7 @@ describe('CollaborationService canonical transactions', () => {
 
     const projectBeforeReassignment = repository.state.projects.get(project.projectId)
     if (!projectBeforeReassignment) throw new Error('Expected Project before reassignment')
-    const reassignedTask = await service.createTask(aliceDevice, {
+    const reassignedTask = await service.createTask(alice.user, {
       projectId: project.projectId,
       assigneeAgentId: bobAgent.agent.agentId,
       title: 'Reassign a resource-producing Task',
@@ -342,7 +605,7 @@ describe('CollaborationService canonical transactions', () => {
       taskId: reassignedTask.taskId, status: 'failed', expectedRevision: reassignedRunning.revision,
       safeFailureCode: 'worker_failed', idempotencyKey: 'idem_resource_reassigned_task_fail_01'
     })
-    const replacement = await service.retryOrReassignTask(aliceDevice, {
+    const replacement = await service.retryOrReassignTask(alice.user, {
       taskId: reassignedTask.taskId,
       assigneeAgentId: aliceAgent.agent.agentId,
       expectedRevision: failedTask.revision,
@@ -433,7 +696,7 @@ describe('CollaborationService canonical transactions', () => {
       budgets: { maxTasks: 4, maxTasksPerRound: 4, maxTaskRetries: 1, maxCoordinationRounds: 2 },
       idempotencyKey: 'idem_capability_progress_project_01'
     })
-    const task = await service.createTask(aliceDevice, {
+    const task = await service.createTask(alice.user, {
       projectId: project.projectId, assigneeAgentId: bobAgent.agent.agentId,
       title: 'Report progress', objective: 'Report bounded monotonic progress and a result.',
       completionCriteria: ['Progress and result are queryable'], dependencyTaskIds: [],
@@ -500,7 +763,7 @@ describe('CollaborationService canonical transactions', () => {
       idempotencyKey: 'idem_capability_progress_failed_01' })
     expect(toTask(failed)).toMatchObject({ status: 'failed', safeFailureCode: 'input_invalid' })
     expect(toTask(failed)).not.toHaveProperty('resultSummary')
-    const retried = await service.retryOrReassignTask(aliceDevice, { taskId: task.taskId,
+    const retried = await service.retryOrReassignTask(alice.user, { taskId: task.taskId,
       assigneeAgentId: aliceAgent.agent.agentId, expectedRevision: failed.revision,
       idempotencyKey: 'idem_capability_progress_retry_01' })
     expect(retried).not.toHaveProperty('progress')
@@ -600,7 +863,7 @@ describe('CollaborationService canonical transactions', () => {
         budgets: { maxTasks: 4, maxTasksPerRound: 4, maxTaskRetries: 2, maxCoordinationRounds: 2 },
         idempotencyKey: `idem_inactive_project_create_${projectStatus}`
       })
-      const offeredTask = await service.createTask(aliceDevice, {
+      const offeredTask = await service.createTask(alice.user, {
         projectId: project.projectId,
         assigneeAgentId: bobAgent.agent.agentId,
         title: 'Offered Task',
@@ -612,7 +875,7 @@ describe('CollaborationService canonical transactions', () => {
       })
       const projectAfterOffered = repository.state.projects.get(project.projectId)
       if (!projectAfterOffered) throw new Error('Expected Project after offered Task')
-      const runningTask = await service.createTask(aliceDevice, {
+      const runningTask = await service.createTask(alice.user, {
         projectId: project.projectId,
         assigneeAgentId: bobAgent.agent.agentId,
         title: 'Running Task',
@@ -636,7 +899,7 @@ describe('CollaborationService canonical transactions', () => {
       })
       const projectAfterRunning = repository.state.projects.get(project.projectId)
       if (!projectAfterRunning) throw new Error('Expected Project after running Task')
-      const failedTask = await service.createTask(aliceDevice, {
+      const failedTask = await service.createTask(alice.user, {
         projectId: project.projectId,
         assigneeAgentId: bobAgent.agent.agentId,
         title: 'Failed Task',
@@ -700,7 +963,7 @@ describe('CollaborationService canonical transactions', () => {
         expiresAt: '2026-08-15T03:00:00.000Z',
         idempotencyKey: `idem_inactive_human_rejected_${projectStatus}`
       })).rejects.toMatchObject({ code: 'invalid_state_transition' })
-      await expect(service.retryOrReassignTask(aliceDevice, {
+      await expect(service.retryOrReassignTask(alice.user, {
         taskId: failed.taskId,
         assigneeAgentId: aliceAgent.agent.agentId,
         expectedRevision: failed.revision,
@@ -733,7 +996,7 @@ describe('CollaborationService canonical transactions', () => {
       coordinatorAgentId: aliceAgent.agent.agentId,
       idempotencyKey: 'idem_completion_boundary_project_01'
     })
-    const completionTask = await service.createTask(aliceDevice, {
+    const completionTask = await service.createTask(alice.user, {
       projectId: completionProject.projectId,
       assigneeAgentId: bobAgent.agent.agentId,
       title: 'Complete first',
@@ -796,7 +1059,7 @@ describe('CollaborationService canonical transactions', () => {
       coordinatorAgentId: aliceAgent.agent.agentId,
       idempotencyKey: 'idem_cancellation_boundary_project_01'
     })
-    const cancellationTask = await service.createTask(aliceDevice, {
+    const cancellationTask = await service.createTask(alice.user, {
       projectId: cancellationProject.projectId,
       assigneeAgentId: bobAgent.agent.agentId,
       title: 'Cancel first',
@@ -814,7 +1077,7 @@ describe('CollaborationService canonical transactions', () => {
       expectedRevision: cancellationProjectCurrent.revision,
       idempotencyKey: 'idem_cancellation_boundary_early_close_01'
     })).rejects.toMatchObject({ code: 'invalid_state_transition' })
-    const cancelledTask = await service.cancelTask(aliceDevice, {
+    const cancelledTask = await service.cancelTask(alice.user, {
       taskId: cancellationTask.taskId,
       expectedRevision: cancellationTask.revision,
       idempotencyKey: 'idem_cancellation_boundary_task_cancel_01'
@@ -835,7 +1098,7 @@ describe('CollaborationService canonical transactions', () => {
       budgets: { maxTasks: 2, maxTasksPerRound: 2, maxTaskRetries: 2, maxCoordinationRounds: 2 },
       idempotencyKey: 'idem_single_route_project_01'
     })
-    const routedTask = await service.createTask(aliceDevice, {
+    const routedTask = await service.createTask(alice.user, {
       projectId: routingProject.projectId,
       assigneeAgentId: bobAgent.agent.agentId,
       title: 'Competing retry routes',
@@ -865,7 +1128,7 @@ describe('CollaborationService canonical transactions', () => {
       idempotencyKey: 'idem_single_route_fail_01'
     })
     const competingRetries = await Promise.allSettled([
-      service.retryOrReassignTask(aliceDevice, {
+      service.retryOrReassignTask(alice.user, {
         taskId: routedTask.taskId,
         assigneeAgentId: aliceAgent.agent.agentId,
         expectedRevision: routedFailed.revision,
@@ -1008,7 +1271,7 @@ describe('CollaborationService canonical transactions', () => {
       providerMessageId: 'zulip-project-message-102', providerEventId: 'zulip-project-event-102',
       text: '旧项目 Topic 不应路由', occurredAt: at.toISOString() }))
       .rejects.toMatchObject({ code: 'not_found' })
-    const task = await service.createTask(aliceDevice, { projectId: project.projectId,
+    const task = await service.createTask(alice.user, { projectId: project.projectId,
       assigneeAgentId: bobAgent.agent.agentId, title: '需确认', objective: '等待 Bob 决策',
       completionCriteria: ['收到回答'], dependencyTaskIds: [], expectedProjectRevision: project.revision,
       idempotencyKey: 'idem_task_human_loop' })

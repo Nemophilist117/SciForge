@@ -1,14 +1,23 @@
-# A 专用 ECS：私有部署与 Provider 验收
+# A 专用 ECS：loopback 预发布与服务器 conformance
 
-本目录为 `@sciforge/collaboration-server` 的最小 Docker Compose 部署层。默认仍是 core-only；只有显式叠加 `compose.provider-zulip.yml` 时才启用 Zulip Provider。两种模式都只暴露 ECS loopback，并通过 SSH tunnel 验收，不需要域名或 TLS，也不包含 B–E 私有模块或网页控制台。
+本目录为新 A ECS 上 `@sciforge/collaboration-server` 的最小 Docker Compose 预发布层。默认仍是 core-only；只有显式叠加 `compose.provider-zulip.yml` 时才启用 Zulip Provider。两种模式都只暴露 ECS loopback，供 A 通过 SSH tunnel 验证服务器、数据库、公开协议和 Provider 边界。
+
+这不是面向 SciForge 的产品入口，也不能证明公网链路已经切换。产品唯一入口必须保持为 `https://chat.sciforge.cn/collaboration`，并由该 HTTPS 路径反向代理到新 A 服务；完整链路是“Zulip → A 云端协同服务 → 本地最新版 SciForge”，结果按相反方向返回。当前 loopback 部署只能作为切换前的 conformance 环境，不能让本地 SciForge 改用 HTTP tunnel 绕过 HTTPS 要求。
+
+| 层面 | 本目录能证明 | 本目录不能单独证明 |
+| --- | --- | --- |
+| 新 A 服务器 | 固定发布物、数据库、loopback API/WSS、Provider 和重启恢复行为 | canonical HTTPS 已反代到新 A |
+| 自动化验收 | HTTP/WSS 与 Zulip API 的协议级闭环 | 真实最新版 SciForge/AgentRuntime 已完成端到端闭环 |
+| 产品开放 | loopback 控制台、API 与预发布门禁已经具备 | 正式 HTTPS 切换和成员业务验收已经完成 |
 
 ## 重要边界
 
 - 运行镜像只安装固定 commit 生成的三个 npm tarball：contracts、Zulip provider 和 server。默认发布仍只接受已进入 `origin/gui` 历史的获批 commit；未合并 feature commit 只能使用下述显式 `private-test` 或 `team-private-acceptance` 模式。Docker build context 受 `.dockerignore` 限制，不复制或编译 SciForge 源码。
 - 默认是 **core-only**：`compose.yml` 不注入 Provider 配置或 secret。`deploy-provider-zulip.sh` 才会显式加载只作用于 app 的 overlay；migrate 始终看不到 Provider 配置和 secret。
-- 原生入口是 `POST /v1/commands` 和 WebSocket `/v1/events`；没有 `/v1/meta`，也没有旧实验服务的 `/v1/ws`。
+- 原生入口是 `POST /v1/commands`、WebSocket `/v1/events` 和 A-only 网页控制台 `/console/`；没有 `/v1/meta`，也没有旧实验服务的 `/v1/ws`。
 - 应用在容器内监听 `0.0.0.0:8787`，但 Docker 只向 ECS `127.0.0.1:${SCIFORGE_COLLAB_HOST_PORT}` 发布。PostgreSQL 不发布宿主机端口。
-- 本轮不使用 Nginx，不开放 80/443。阿里云安全组继续只允许受限来源访问 SSH 22。
+- 本目录当前不使用 Nginx，也不开放 80/443；这是预发布隔离边界，不是最终产品网络形态。阿里云安全组继续只允许受限来源访问 SSH 22，正式开放必须另外完成 canonical HTTPS 到新 A 的受控切换。
+- 最新版 SciForge 的本地协作领域只经 A 的 HTTPS/WSS 公共接口连接云端；Zulip adapter 运行在 A 云端服务侧，本地 SciForge 不直接调用 Zulip。A 不应另造一套成员侧聊天、Agent runtime 或临时 HTTP 产品入口。
 - app 与一次性 migrate 容器固定使用非登录 UID/GID `10001:10001`；Provider secret 由宿主机 `root:10001`、文件 `0640`、目录 `0750` 提供，other 无任何权限。Provider 部署门禁还会拒绝 `sciforge-admin` 或任一可登录宿主机账号把数值 GID `10001` 作为主组或附加组；宿主机没有对应的 NSS group 条目是允许的，容器仍可按数值 GID 读取只读挂载。
 
 ## 1. 在可信构建机生成 release bundle
@@ -146,9 +155,13 @@ sudo deploy/collaboration-private/scripts/deploy-provider-zulip.sh \
 
 这个入口额外加载 `compose.provider-zulip.yml`。overlay 只修改 app，并以只读 bind mount 注入 config 和 secret；migrate 不获得这两个环境变量或 mount。启动时 runtime 会调用 `diagnose()` 并将统一脱敏后的结果写入 `provider_diagnostics`。Provider 状态不改变 `/readyz` 的数据库就绪语义，但 `verify-provider-zulip.sh` 会作为单独发布门禁，要求 catalog 恰好只有 `zulip`，且数据库中存在晚于本次 app 容器启动、十分钟内的 `healthy` 诊断。验证过程不打印 secret、配置正文或诊断私有细节。若 app 启动或门禁验证失败，部署 trap 会停止本次未获验证的 app，并保留 PostgreSQL、named volume、失败容器日志、备份与 release 现场供诊断；它不会删除数据、自动声称回滚成功或继续对团队开放失败版本。
 
-### A 两用户公开 API 验收驱动
+### A 两用户服务器 conformance 驱动
 
-从同一固定 commit 的本地工作树运行 `scripts/collaboration-a-two-user-e2e.test.mjs`，经 SSH Tunnel 访问 `http://127.0.0.1:<LOCAL_PORT>`。真实验收必须设置 `SCIFORGE_COLLAB_A_E2E=1`，并提供以下非 secret 配置：A 服务 loopback URL、`https://chat.sciforge.cn` realm、Bot email、一个私有 Project stream、Owner/Member email、两个彼此独立且不同于 Project stream 的私有 pairing stream。每个 pairing stream 的订阅者必须精确为对应用户与新 A Bot；Project stream 的订阅者必须精确为 Owner、Member 与该 Bot。驱动会通过 Zulip API 核对稳定 user ID，出现任何额外订阅者都拒绝运行。两个测试用户的 Zulip API key 只能通过各自 `0600` 的 `..._API_KEY_FILE` 提供，不能放在命令行或普通 env 值中。
+从同一固定 commit 的本地工作树运行 `scripts/collaboration-a-two-user-e2e.test.mjs`，经 SSH Tunnel 访问 `http://127.0.0.1:<LOCAL_PORT>`。该驱动是 A 可选的自动化服务器验收工具，不是最新版 SciForge 端到端驱动，也不是服务运行或成员接入的前置条件。
+
+只有运行这项自动化验收时，才需要以下测试拓扑：A 服务 loopback URL、`https://chat.sciforge.cn` realm、Bot email、一个私有 Project stream、Owner/Member email、两个彼此独立且不同于 Project stream 的私有 pairing stream。每个 pairing stream 的订阅者必须精确为对应测试用户与新 A Bot；Project stream 的订阅者必须精确为 Owner、Member 与该 Bot。驱动会通过 Zulip API 核对稳定 user ID，出现任何额外订阅者都拒绝运行。两个测试用户的 Zulip API key 只能通过各自 `0600` 的 `..._API_KEY_FILE` 提供，不能放在命令行或普通 env 值中。
+
+Owner/Member API key 与三个私有 stream 仅服务于上述自动化测试夹具。正常产品运行不要求这三个固定 stream；普通成员也无需向 A 提供个人 Zulip API key。A 服务运行时只持有专用 Bot 的受限凭据，成员通过正式 Zulip 身份、pairing 和最新版 SciForge 协作能力接入。
 
 `SCIFORGE_COLLAB_ZULIP_SECRET_OUTPUT_DIR` 必须是运行用户拥有、非 symlink、权限 `0700` 的仓库外目录。驱动会把一次性 User/Agent 凭据原子写成独立 `0600` 文件，最后只生成包含 User/Endpoint/Agent ID 与凭据文件 basename 的脱敏 manifest。驱动拒绝预置 A/B 应用身份，必须在本次执行中完成正式 pairing；凭据撤销测试后会重新 pairing 并轮换原 Agent credential，确保留下的测试拓扑仍可运营。
 
@@ -156,7 +169,7 @@ sudo deploy/collaboration-private/scripts/deploy-provider-zulip.sh \
 SCIFORGE_COLLAB_A_E2E=1 npm run collaboration:acceptance:test
 ```
 
-该驱动只使用公开 HTTP/WSS 与 Zulip API，不导入 Service/Repository，也不写数据库。通过条件包括实时 WSS 唤醒、处理后 ACK、在 WSS 已断开时产生 `task.offered` 与 `task.cancelled` 后按连续 sequence 从最后 cursor 补取、真实幂等复放、HumanNeeded/Answer、ResourceRef、ProjectRecord 查询与验收、同 Worker 重试、跨 Worker 改派、旧 Worker 拒绝和凭据撤销/恢复。
+该驱动只使用公开 HTTP/WSS 与 Zulip API，不导入 Service/Repository，也不写数据库。通过条件包括实时 WSS 唤醒、处理后 ACK、在 WSS 已断开时产生 `task.offered` 与 `task.cancelled` 后按连续 sequence 从最后 cursor 补取、真实幂等复放、HumanNeeded/Answer、ResourceRef、ProjectRecord 查询与验收、同 Worker 重试、跨 Worker 改派、旧 Worker 拒绝和凭据撤销/恢复。它证明的是 A 服务公共边界的 conformance；只有 canonical HTTPS 已指向新 A，且真实最新版 SciForge 经 Zulip 完成任务接收与结果回传后，才能宣告产品端到端链路通过。
 
 ## 4. 通过 SSH Tunnel 使用
 
@@ -177,7 +190,7 @@ http://127.0.0.1:18080/v1/commands
 ws://127.0.0.1:18080/v1/events
 ```
 
-团队验收不要共享管理员账号或一把 key。B、C、D、E 各使用独立的 `sciforge-tunnel-b` 至 `sciforge-tunnel-e`。安装时必须提供成员字母、该成员独立的 ed25519 公钥和其真实公网出口 `/32`；key 默认 14 天到期，也可提供更早的 OpenSSH `YYYYMMDDHHMMSSZ` 时间：
+如确有低层协议或故障诊断需要，团队预发布验收不得共享管理员账号或一把 key。B、C、D、E 可各使用独立的 `sciforge-tunnel-b` 至 `sciforge-tunnel-e`；SSH tunnel 不是正常产品访问方式，也不替代 Zulip 与 canonical HTTPS。安装时必须提供成员字母、该成员独立的 ed25519 公钥和其真实公网出口 `/32`；key 默认 14 天到期，也可提供更早的 OpenSSH `YYYYMMDDHHMMSSZ` 时间：
 
 ```bash
 sudo deploy/collaboration-private/scripts/install-tunnel-user.sh \
@@ -258,4 +271,4 @@ deploy/collaboration-private/scripts/static-policy-test.sh
 
 默认运行上限：PostgreSQL 1.5 CPU/2 GiB/256 PID，app 1 CPU/768 MiB/256 PID；所有容器使用有界 `json-file` 日志。app 为只读 root filesystem、空 capability set、`no-new-privileges`，并以 Node 镜像的非 root 用户运行。
 
-域名、TLS、Nginx、网页控制台以及公网 B–E 联调都是后续独立变更。当前 Zulip 只用于显式的 loopback/SSH-tunnel 私有验收，不应通过放开 8787、5432 或复制旧实验部署代码来绕过。
+A 的简易网页控制台已经由同一 server bundle 在 `/console/` 提供，并与 API 共用同源安全边界；它在 loopback 可做 A 内部验收，但在 canonical HTTPS 完成受控反向代理切换前不向成员宣称正式可用。B–E 私有模块仍不属于 A。切换完成前，当前 Zulip 只用于显式的 loopback/SSH-tunnel 服务器 conformance，不应通过放开 8787、5432、让最新版 SciForge 使用 HTTP tunnel 或复制旧实验部署代码来绕过产品链路。

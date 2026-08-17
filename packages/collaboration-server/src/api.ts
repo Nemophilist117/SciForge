@@ -31,6 +31,7 @@ import {
   toTask,
   toUserPrincipal
 } from './contracts.js'
+import { getCollaborationConsoleAsset, type CollaborationConsoleAsset } from './console.js'
 import { stableDigest } from './crypto.js'
 import { CollaborationServiceError } from './errors.js'
 import type { CollaborationService } from './service.js'
@@ -79,6 +80,21 @@ async function handle(
   limiter: AnonymousBootstrapLimiter
 ): Promise<void> {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`)
+  if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === `${basePath}/console`) {
+    response.writeHead(308, {
+      location: `${basePath}/console/`,
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer'
+    })
+    response.end()
+    return
+  }
+  if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith(`${basePath}/console/`)) {
+    const asset = getCollaborationConsoleAsset(url.pathname.slice(basePath.length))
+    if (!asset) return sendJson(response, 404, { ok: false })
+    return sendConsoleAsset(response, asset, request.method === 'HEAD')
+  }
   if (request.method === 'GET' && url.pathname === `${basePath}/healthz`) {
     return sendJson(response, 200, { ok: true })
   }
@@ -294,19 +310,19 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     }
     case 'project.endpoint.get': return entityResponse(command,
       toProjectEndpointBinding(await service.getProjectEndpointBinding(requiredActor(actor), command.projectId)))
-    case 'task.create': return entityResponse(command, toTask(await service.createTask(requiredAgent(actor), {
+    case 'task.create': return entityResponse(command, toTask(await service.createTask(requiredUser(actor), {
       projectId: command.projectId, assigneeAgentId: command.assigneeAgentId, title: command.title,
       objective: command.objective, completionCriteria: command.completionCriteria, dependencyTaskIds: command.dependencyTaskIds,
       expectedProjectRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey })))
     case 'task.get': return entityResponse(command, toTask(await service.getTask(requiredActor(actor), command.taskId)))
-    case 'task.retry': return entityResponse(command, toTask(await service.retryOrReassignTask(requiredAgent(actor), {
+    case 'task.retry': return entityResponse(command, toTask(await service.retryOrReassignTask(requiredHumanOrAgent(actor), {
       taskId: command.taskId, assigneeAgentId: command.assigneeAgentId,
       expectedRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey
     })))
     case 'task.transition': {
       const status = command.status === 'running' ? 'in_progress' : command.status === 'succeeded' ? 'completed' : command.status
-      if (status === 'offered') throw new CollaborationServiceError('invalid_state_transition', 'Retrying a terminal Task requires explicit Coordinator reassignment.')
-      if (status === 'cancelled') return entityResponse(command, toTask(await service.cancelTask(requiredAgent(actor), command)))
+      if (status === 'offered') throw new CollaborationServiceError('invalid_state_transition', 'Retrying a terminal Task requires task.retry; changing the assignee also requires Project owner confirmation.')
+      if (status === 'cancelled') return entityResponse(command, toTask(await service.cancelTask(requiredUser(actor), command)))
       return entityResponse(command, toTask(await service.transitionTask(requiredAgent(actor), {
         taskId: command.taskId, expectedRevision: command.expectedRevision, status,
         resultSummary: command.resultSummary, safeFailureCode: command.safeFailureCode,
@@ -486,6 +502,20 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
     'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' })
   response.end(JSON.stringify(body))
+}
+
+function sendConsoleAsset(response: ServerResponse, asset: CollaborationConsoleAsset, headOnly: boolean): void {
+  response.writeHead(200, {
+    'content-type': asset.contentType,
+    'content-length': String(Buffer.byteLength(asset.body)),
+    'cache-control': 'no-store',
+    'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY'
+  })
+  response.end(headOnly ? undefined : asset.body)
 }
 
 type AnonymousBootstrapCommand = Extract<RestRequest, {

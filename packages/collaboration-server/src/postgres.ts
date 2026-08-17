@@ -489,6 +489,16 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
     return result.rows[0] ? mapTask(result.rows[0]) : null
   }
 
+  async listPendingHumanRequestsForTaskForUpdate(taskId: string): Promise<StoredHumanRequest[]> {
+    const result = await this.sql.query(
+      `SELECT * FROM sciforge_collaboration.human_requests
+       WHERE task_id=$1 AND status='pending'
+       ORDER BY created_at,human_request_id FOR UPDATE`,
+      [taskId]
+    )
+    return result.rows.map(mapHumanRequest)
+  }
+
   async insertUser(user: StoredUser): Promise<void> {
     await this.sql.query(
       `INSERT INTO sciforge_collaboration.user_principals

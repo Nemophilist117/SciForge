@@ -1,5 +1,7 @@
 # 人类 IM 路由需求
 
+> 边界说明：A 只拥有云端 Human Gateway、Zulip Provider/adapter、身份绑定、locator 解析与公共路由事实。手机交互、桌面展示与 Computer Use/跨端稳定性是 `origin/gui` 既有跨团队基线，不是 A 本轮发布门槛。
+
 ## ADDED Requirements
 
 ### Requirement: 每条可执行消息必须有明确目标
@@ -36,7 +38,8 @@ Project topic 中的用户输入 SHALL 先转换为带 `projectId`、`senderUser
 
 - **WHEN** 成员在 Project topic 中提出指令
 - **THEN** 云端 SHALL 将其保存为 ProjectInput
-- **AND** Coordinator SHALL 决定回答、创建 Task、请求澄清或拒绝
+- **AND** Coordinator SHALL 决定回答、提出 Task 建议、请求澄清或拒绝
+- **AND** 正式 Task SHALL 等待 Project Owner 确认后创建
 - **AND** 所有 Worker SHALL NOT 被自由广播唤醒。
 
 #### Scenario: 非成员在 Project topic 发言

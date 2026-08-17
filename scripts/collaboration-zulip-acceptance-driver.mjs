@@ -10,6 +10,10 @@ import {
 } from '@sciforge/collaboration-contracts'
 import { WebSocket } from 'ws'
 
+// Optional server-conformance harness only. Participant API keys must belong to
+// dedicated QA identities, never ordinary team members; owner-controlled 0600
+// files are the preferred source. This driver does not start or substitute for
+// the latest SciForge desktop client.
 const PARTICIPANT_SLOTS = Object.freeze(['A', 'B', 'C', 'D', 'E', 'F'])
 const PROTOCOL_VERSION = '1.0'
 const DEFAULT_TIMEOUT_MS = 90_000
@@ -1152,13 +1156,13 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
     }
   }
 
-  async function createTaskWithAgent(agentState, projectState, assigneeState, label) {
+  async function createTaskWithCredential(credential, projectState, assigneeState, label) {
     return withProjectTaskLock(projectState, async () => {
-      const current = await currentProject(projectState, agentState.deviceCredential)
+      const current = await currentProject(projectState, credential)
       const routed = await withArmedInbox(
         assigneeState,
         'agent',
-        () => collaborationCommand(agentState.deviceCredential, {
+        () => collaborationCommand(credential, {
           type: 'task.create',
           projectId: projectState.public.projectId,
           expectedRevision: current.revision,
@@ -1186,7 +1190,8 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
     const projectState = projectStateFor(project)
     const coordinatorState = stateFor(coordinator)
     const assigneeState = stateFor(assignee)
-    const task = await createTaskWithAgent(coordinatorState, projectState, assigneeState, label)
+    if (projectState.coordinator !== coordinatorState) fail('COORDINATOR_REQUIRED')
+    const task = await createTaskWithCredential(projectState.owner.userCredential, projectState, assigneeState, label)
     safeReport(report, 'task.created')
     return Object.freeze(task)
   }
@@ -1568,11 +1573,16 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
   async function retryTaskConcurrently({ coordinator, task, assignee }) {
     const coordinatorState = stateFor(coordinator)
     const assigneeState = stateFor(assignee)
+    const projectState = projectStates.get(task?.projectId)
+    if (!projectState || projectState.coordinator !== coordinatorState) fail('COORDINATOR_REQUIRED')
+    const retryCredential = task.assigneeAgentId === assignee.agentId
+      ? coordinatorState.deviceCredential
+      : projectState.owner.userCredential
     const channel = await openInboxSocket(assigneeState, 'agent')
     let response
     try {
       const attempts = await Promise.allSettled([0, 1].map((index) => collaborationCommand(
-        coordinatorState.deviceCredential,
+        retryCredential,
         {
           type: 'task.retry',
           taskId: task.taskId,
@@ -1685,8 +1695,8 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
         disconnected.socket.terminate()
       })
 
-      const current = await currentProject(projectState, coordinatorState.deviceCredential)
-      const createdResponse = await collaborationCommand(coordinatorState.deviceCredential, {
+      const current = await currentProject(projectState, projectState.owner.userCredential)
+      const createdResponse = await collaborationCommand(projectState.owner.userCredential, {
         type: 'task.create',
         projectId: project.projectId,
         expectedRevision: current.revision,
@@ -1701,7 +1711,7 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
         fail('COLLABORATION_RESPONSE_INVALID')
       }
       const created = createdResponse.entity
-      const cancelledResponse = await collaborationCommand(coordinatorState.deviceCredential, {
+      const cancelledResponse = await collaborationCommand(projectState.owner.userCredential, {
         type: 'task.transition',
         taskId: created.taskId,
         expectedRevision: created.revision,
@@ -1942,8 +1952,8 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
     const targetState = stateFor(target)
     const projectState = projectStateFor(project)
     if (requester !== targetState) fail('HUMAN_TARGET_REQUIRED')
-    const decisionTask = await createTaskWithAgent(
-      projectState.coordinator,
+    const decisionTask = await createTaskWithCredential(
+      projectState.owner.userCredential,
       projectState,
       requester,
       `human-needed-${task.taskId.slice(-12)}`
@@ -2121,11 +2131,11 @@ export function createZulipAcceptanceDriver({ environment, report } = {}) {
     const assigneeState = stateFor(assignee)
     const projectState = projectStateFor(project)
     try {
-      const task = await createTaskWithAgent(agentState, projectState, assigneeState, label)
+      const task = await createTaskWithCredential(agentState.deviceCredential, projectState, assigneeState, label)
       safeReport(report, 'task.created.by-agent')
       return Object.freeze(task)
     } catch (error) {
-      if (error?.code === 'COLLABORATION_PERMISSION_DENIED') fail('COORDINATOR_REQUIRED')
+      if (error?.code === 'COLLABORATION_PERMISSION_DENIED') fail('OWNER_CONFIRMATION_REQUIRED')
       throw error
     }
   }

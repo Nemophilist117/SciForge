@@ -138,6 +138,7 @@ Secret reference 必须是安全 basename，不能包含路径分隔符。运行
 
 - `GET /healthz`：纯 liveness，只表示进程可响应，不披露环境、数据库或 provider 信息。
 - `GET /readyz`：检查 PostgreSQL 可访问且 schema version 已到当前版本；迁移前或数据库故障时不应接流量。
+- `GET /console/`：A-only 同源网页控制台；Bearer 仅保存在页面内存中，用于 Owner 确认、状态查询和 Inbox 操作。
 - `POST /v1/commands`：严格 REST command envelope。
 - `GET /v1/events`：WebSocket Upgrade，仅发送连接和 inbox 可用性通知。
 
@@ -146,6 +147,7 @@ Loopback 核验示例：
 ```sh
 curl --fail http://127.0.0.1:8787/healthz
 curl --fail http://127.0.0.1:8787/readyz
+curl --fail http://127.0.0.1:8787/console/
 ```
 
 收到 `SIGTERM` 或 `SIGINT` 后，进程会停止接受新连接，并依次关闭 provider pump、WebSocket、HTTP 与 PostgreSQL pool。外部服务管理器仍应配置有界停止超时。

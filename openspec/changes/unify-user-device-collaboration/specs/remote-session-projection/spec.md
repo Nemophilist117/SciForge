@@ -1,5 +1,7 @@
 # 个人 Session 远端投影需求
 
+> 边界说明：这是 `origin/gui` 既有桌面/手机协作的跨团队基线，不是 A 本轮实现或发布门槛。A 只保存投影所需的最小云端身份、定位与路由事实，不拥有本地 runtime/thread/workspace 映射或桌面交互。
+
 ## ADDED Requirements
 
 ### Requirement: 一个个人 topic 固定投影一个本地 Session

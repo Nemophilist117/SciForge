@@ -31,6 +31,13 @@ postgres_endpoint="$("${COMPOSE[@]}" port postgres 5432 2>/dev/null || true)"
 base_url="http://127.0.0.1:$SCIFORGE_COLLAB_HOST_PORT"
 curl --fail --silent --show-error --max-time 5 "$base_url/healthz" > /dev/null
 curl --fail --silent --show-error --max-time 5 "$base_url/readyz" > /dev/null
+console_headers="$(curl --fail --silent --show-error --max-time 5 --dump-header - --output /dev/null "$base_url/console/")"
+grep -qi '^content-type: text/html; charset=utf-8' <<< "$console_headers" \
+  || die "A console did not return the expected HTML content type."
+grep -qi "^content-security-policy: .*frame-ancestors 'none'" <<< "$console_headers" \
+  || die "A console is missing its fail-closed frame policy."
+console_body="$(curl --fail --silent --show-error --max-time 5 "$base_url/console/")"
+grep -q 'SciForge · 协同控制塔' <<< "$console_body" || die "A console shell is missing from the fixed release."
 
 schema_version="$("${COMPOSE[@]}" exec -T --user postgres postgres \
   psql -U sciforge_collab -d sciforge_collaboration --tuples-only --no-align \
@@ -169,4 +176,4 @@ websocket_status="$(curl --silent --output /dev/null --write-out '%{http_code}' 
   "$base_url/v1/events" || true)"
 [[ "$websocket_status" == "401" ]] || die "Unauthenticated WebSocket Upgrade was not rejected with HTTP 401."
 
-echo "Verification passed: loopback-only core, least-privilege database role, release schema v${expected_schema_version}/${expected_table_count} tables, fixed image revision/UID/GID, probes and auth boundaries."
+echo "Verification passed: loopback-only core, least-privilege database role, release schema v${expected_schema_version}/${expected_table_count} tables, fixed image revision/UID/GID, A console, probes and auth boundaries."

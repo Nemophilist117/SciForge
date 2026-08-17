@@ -1,5 +1,7 @@
 # 用户—设备统一身份需求
 
+> 边界说明：A 拥有云端 User、Human Endpoint binding、Agent ownership 与 Participant 权威事实。本地 secret store、安装实例、renderer 展示和设备 runtime 属于 `origin/gui`/C 客户端基线，不是 A 本轮发布门槛。
+
 ## ADDED Requirements
 
 ### Requirement: 用户是唯一的人类协作主体

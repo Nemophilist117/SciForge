@@ -502,6 +502,13 @@ export class FakeCollaborationRepository {
     return copy(this.state.humanRequests.get(humanRequestId) ?? null)
   }
 
+  async listPendingHumanRequestsForTaskForUpdate(taskId) {
+    return copy([...this.state.humanRequests.values()]
+      .filter((request) => request.taskId === taskId && request.status === 'pending')
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) ||
+        left.humanRequestId.localeCompare(right.humanRequestId)))
+  }
+
   async insertHumanRequest(request) {
     if (this.state.humanRequests.has(request.humanRequestId)) throw new Error('fake repository duplicate human request')
     this.state.humanRequests.set(request.humanRequestId, copy(request))

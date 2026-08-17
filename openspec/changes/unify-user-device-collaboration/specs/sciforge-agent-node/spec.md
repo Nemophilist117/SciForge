@@ -1,5 +1,7 @@
 # SciForge Agent 节点需求
 
+> 边界说明：节点协议与 AgentRuntime 是 `origin/gui`/C 的客户端基线，不是 A 本轮重新实现的内容。A 只提供节点注册、凭据、能力目录、Inbox、心跳、任务状态和结果的公共云端边界。
+
 ## ADDED Requirements
 
 ### Requirement: 每台 SciForge 是所属用户的独立 Agent 节点

@@ -1101,9 +1101,9 @@ export class CollaborationService {
   }): Promise<StoredHumanAnswer> {
     assertText(input.answer, 'answer', 1, 32_000)
     return this.commit(actor, 'human.answer', input.idempotencyKey, input, async (tx, at) => {
-      const request = required(await tx.getHumanRequest(input.humanRequestId), 'HumanNeeded request')
-      authorize({ actor, operation: 'human_answer', targetUserId: request.targetUserId,
-        requiredAssurance: request.requiredAssurance })
+      const initialRequest = required(await tx.getHumanRequest(input.humanRequestId), 'HumanNeeded request')
+      authorize({ actor, operation: 'human_answer', targetUserId: initialRequest.targetUserId,
+        requiredAssurance: initialRequest.requiredAssurance })
       if (input.sourceLocator) {
         const [endpoint, binding] = await Promise.all([
           tx.getEndpoint(actor.humanEndpointId),
@@ -1112,12 +1112,18 @@ export class CollaborationService {
         ])
         if (!endpoint || endpoint.status !== 'active' || endpoint.userId !== actor.userId ||
             endpoint.provider !== input.sourceLocator.provider || endpoint.realmId !== input.sourceLocator.realmId ||
-            !binding || binding.status !== 'active' || binding.projectId !== request.projectId) {
+            !binding || binding.status !== 'active' || binding.projectId !== initialRequest.projectId) {
           fail('not_found', 'The provider answer does not originate from the active Project endpoint binding.')
         }
       }
-      expectRevision(request.revision, input.requestRevision)
+      if (initialRequest.status !== 'pending' || initialRequest.expiresAt <= at) {
+        fail('request_expired', 'The HumanNeeded request is no longer current.')
+      }
+      const pendingRequests = await tx.listPendingHumanRequestsForTaskForUpdate(initialRequest.taskId)
+      const request = pendingRequests.find((candidate) => candidate.humanRequestId === input.humanRequestId) ??
+        required(await tx.getHumanRequest(input.humanRequestId), 'HumanNeeded request')
       if (request.status !== 'pending' || request.expiresAt <= at) fail('request_expired', 'The HumanNeeded request is no longer current.')
+      expectRevision(request.revision, input.requestRevision)
       const existing = await tx.getHumanAnswerForRequest(request.humanRequestId)
       if (existing) return { response: entityResponse('human_answer.created', existing), resourceKind: 'human_answer',
         resourceId: existing.humanAnswerId }
@@ -1238,7 +1244,7 @@ export class CollaborationService {
     }).then(responseEntity<StoredProject>)
   }
 
-  async createTask(actor: AgentActor, input: {
+  async createTask(actor: UserActor, input: {
     projectId: string
     assigneeAgentId: string
     title: string
@@ -1256,7 +1262,8 @@ export class CollaborationService {
       dependencyTaskIds: dependencies }, async (tx, at) => {
       const project = required(await tx.getProjectForUpdate(input.projectId), 'Project')
       if (project.status !== 'active') fail('invalid_state_transition', 'Tasks may only be created for an active Project.')
-      authorize({ actor, operation: 'task_create', coordinatorAgentId: project.coordinatorAgentId })
+      const actorMember = await tx.getProjectMember(project.projectId, actor.userId)
+      authorize({ actor, operation: 'task_create', projectRole: actorMember?.role })
       expectRevision(project.revision, input.expectedProjectRevision)
       const assignee = required(await tx.getAgent(input.assigneeAgentId), 'Assignee Agent')
       const member = await tx.getProjectMember(project.projectId, assignee.ownerUserId)
@@ -1273,7 +1280,7 @@ export class CollaborationService {
         if (dependency.projectId !== project.projectId) fail('validation_failed', 'Dependencies must belong to the same Project.')
       }
       const task: StoredTask = { taskId: newId('tsk'), projectId: project.projectId, assigneeAgentId: assignee.agentId,
-        createdByAgentId: actor.agentId, title: input.title, objective: input.objective, completionCriteria: criteria,
+        createdByAgentId: project.coordinatorAgentId, title: input.title, objective: input.objective, completionCriteria: criteria,
         dependencyTaskIds: dependencies, status: 'offered', retryCount: 0, maxRetries: project.budgets.maxTaskRetries,
         coordinationRound: project.coordinationRound, revision: 1, createdAt: at, updatedAt: at }
       await tx.insertTask(task)
@@ -1381,7 +1388,7 @@ export class CollaborationService {
     return task
   }
 
-  async retryOrReassignTask(actor: AgentActor, input: {
+  async retryOrReassignTask(actor: UserActor | AgentActor, input: {
     taskId: string
     assigneeAgentId: string
     expectedRevision: number
@@ -1391,14 +1398,34 @@ export class CollaborationService {
       const initialTask = required(await tx.getTask(input.taskId), 'Task')
       const project = required(await tx.getProjectForUpdate(initialTask.projectId), 'Project')
       const task = required(await tx.getTaskForUpdate(input.taskId), 'Task')
-      authorize({ actor, operation: 'task_create', coordinatorAgentId: project.coordinatorAgentId })
+      const actorMember = await tx.getProjectMember(project.projectId, actor.userId)
+      const isOwner = actor.kind === 'user' && actorMember?.role === 'owner'
+      const isCoordinator = actor.kind === 'agent_device' && actor.agentId === project.coordinatorAgentId
+      if (!isOwner && !isCoordinator) {
+        fail('permission_denied', 'Task retry or reassignment requires the Project owner or active Coordinator Agent.')
+      }
       if (project.status !== 'active') fail('invalid_state_transition', 'Task retry requires an active Project.')
       expectRevision(task.revision, input.expectedRevision)
-      if (task.status !== 'failed' && task.status !== 'rejected') fail('invalid_state_transition', 'Only rejected or failed tasks may be retried.')
+      const sameAssignee = input.assigneeAgentId === task.assigneeAgentId
+      authorize(sameAssignee
+        ? { actor, operation: 'task_retry', coordinatorAgentId: project.coordinatorAgentId, projectRole: actorMember?.role }
+        : { actor, operation: 'task_reassign', projectRole: actorMember?.role })
+      if (sameAssignee && task.status !== 'failed' && task.status !== 'rejected') {
+        fail('invalid_state_transition', 'Only rejected or failed tasks may be retried by the current assignee.')
+      }
+      if (!sameAssignee && !['offered', 'accepted', 'in_progress', 'needs_human', 'failed', 'rejected'].includes(task.status)) {
+        fail('invalid_state_transition', 'Completed or cancelled tasks cannot be reassigned.')
+      }
       if (task.retryCount >= project.budgets.maxTaskRetries) fail('budget_exhausted', 'The task automatic retry budget is exhausted.')
       const assignee = required(await tx.getAgent(input.assigneeAgentId), 'Assignee Agent')
       const member = await tx.getProjectMember(project.projectId, assignee.ownerUserId)
       if (assignee.status !== 'active' || !member?.active || member.role === 'observer') fail('permission_denied', 'The assignee is not authorized for this Project.')
+      if (!sameAssignee) {
+        const pendingRequests = await tx.listPendingHumanRequestsForTaskForUpdate(task.taskId)
+        for (const request of pendingRequests) {
+          await tx.updateHumanRequest({ ...request, status: 'cancelled', revision: request.revision + 1, updatedAt: at }, request.revision)
+        }
+      }
       const updated: StoredTask = { ...clearTaskAttemptOutputs(task), assigneeAgentId: assignee.agentId, status: 'offered',
         retryCount: task.retryCount + 1,
         completedAt: undefined, revision: task.revision + 1, updatedAt: at }
@@ -1411,7 +1438,7 @@ export class CollaborationService {
     }).then(responseEntity<StoredTask>)
   }
 
-  async cancelTask(actor: AgentActor, input: {
+  async cancelTask(actor: UserActor, input: {
     taskId: string
     expectedRevision: number
     idempotencyKey: string
@@ -1420,7 +1447,8 @@ export class CollaborationService {
       const initialTask = required(await tx.getTask(input.taskId), 'Task')
       const project = required(await tx.getProjectForUpdate(initialTask.projectId), 'Project')
       const task = required(await tx.getTaskForUpdate(input.taskId), 'Task')
-      authorize({ actor, operation: 'task_create', coordinatorAgentId: project.coordinatorAgentId })
+      const actorMember = await tx.getProjectMember(project.projectId, actor.userId)
+      authorize({ actor, operation: 'task_cancel', projectRole: actorMember?.role })
       expectRevision(task.revision, input.expectedRevision)
       if (['rejected', 'completed', 'failed', 'cancelled'].includes(task.status)) fail('invalid_state_transition', 'The task is already terminal.')
       const updated: StoredTask = { ...task, status: 'cancelled', completedAt: at,
@@ -1428,7 +1456,7 @@ export class CollaborationService {
       await tx.updateTask(updated, task.revision)
       const message = await this.appendInbox(tx, { kind: 'agent', id: task.assigneeAgentId }, 'task.cancelled',
         { protocolVersion: '1.0', type: 'task.cancelled', projectId: project.projectId,
-          taskId: task.taskId, revision: updated.revision, reason: 'Cancelled by the active Coordinator.' }, at)
+          taskId: task.taskId, revision: updated.revision, reason: 'Cancelled by the Project owner.' }, at)
       return { response: entityResponse('task.updated', updated), resourceKind: 'task', resourceId: task.taskId,
         notifications: [{ recipient: message.recipient, sequence: message.sequence }] }
     }).then(responseEntity<StoredTask>)
@@ -1441,7 +1469,7 @@ export class CollaborationService {
   }): Promise<StoredProject> {
     return this.commit(actor, 'project.round.advance', input.idempotencyKey, input, async (tx, at) => {
       const project = required(await tx.getProjectForUpdate(input.projectId), 'Project')
-      authorize({ actor, operation: 'task_create', coordinatorAgentId: project.coordinatorAgentId })
+      authorize({ actor, operation: 'coordination_write', coordinatorAgentId: project.coordinatorAgentId })
       if (project.status !== 'active') fail('invalid_state_transition', 'Coordination rounds require an active Project.')
       expectRevision(project.revision, input.expectedRevision)
       if (project.coordinationRound >= project.budgets.maxCoordinationRounds) {
@@ -1518,11 +1546,14 @@ export class CollaborationService {
       const record = required(await tx.getProjectRecord(input.projectRecordId), 'Project record')
       const project = required(await tx.getProject(record.projectId), 'Project')
       const member = await tx.getProjectMember(project.projectId, actor.userId)
-      authorize({ actor, operation: 'record_accept', projectRole: member?.role, coordinatorAgentId: project.coordinatorAgentId })
-      expectRevision(record.revision, input.expectedRevision)
-      if (record.status !== 'candidate') fail('invalid_state_transition', 'Only a candidate Project record may be accepted.')
       const decision = input.decision ?? 'accepted'
       const kind = input.acceptedKind ?? (record.kind === 'proposal' && decision === 'accepted' ? 'decision' : record.kind)
+      authorize({ actor, operation: 'record_accept', projectRole: member?.role,
+        coordinatorAgentId: project.coordinatorAgentId, recordKind: record.kind })
+      authorize({ actor, operation: 'record_accept', projectRole: member?.role,
+        coordinatorAgentId: project.coordinatorAgentId, recordKind: kind })
+      expectRevision(record.revision, input.expectedRevision)
+      if (record.status !== 'candidate') fail('invalid_state_transition', 'Only a candidate Project record may be accepted.')
       const updated: StoredProjectRecord = { ...record, kind, status: decision,
         ...(decision === 'accepted'
           ? actor.kind === 'agent_device' ? { acceptedByAgentId: actor.agentId } : { acceptedByUserId: actor.userId }

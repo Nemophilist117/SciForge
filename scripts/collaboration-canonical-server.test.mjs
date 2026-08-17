@@ -275,7 +275,7 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
     coordinatorAgentId: agentA.agent.agentId,
     idempotencyKey: 'create-project'
   })
-  const taskB = await rig.service.createTask(agentA.actor, {
+  const taskB = await rig.service.createTask(a.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
     title: 'Worker B 任务',
@@ -285,7 +285,7 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
     expectedProjectRevision: project.revision,
     idempotencyKey: 'create-task-B'
   })
-  const taskBReplay = await rig.service.createTask(agentA.actor, {
+  const taskBReplay = await rig.service.createTask(a.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
     title: 'Worker B 任务',
@@ -336,7 +336,7 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
   assert.ok(!aInbox.messages.some((message) => message.messageType === 'human.needed'))
 
   project = await rig.repository.getProject(project.projectId)
-  const taskC = await rig.service.createTask(agentA.actor, {
+  const taskC = await rig.service.createTask(a.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentC.agent.agentId,
     title: 'Worker C 任务',
@@ -381,16 +381,27 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
     expectedProjectRevision: handedOff.revision,
     idempotencyKey: 'old-coordinator-task'
   }))
-  assert.doesNotReject(() => restarted.createTask(agentC.actor, {
+  await expectCode('permission_denied', () => restarted.createTask(agentC.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
-    title: '新 Coordinator 任务',
-    objective: '新 Coordinator 创建',
-    completionCriteria: [],
+    title: '新 Coordinator 直接创建任务',
+    objective: '新 Coordinator 也必须等待 Owner 确认',
+    completionCriteria: ['Owner 确认'],
     dependencyTaskIds: [],
     expectedProjectRevision: handedOff.revision,
     idempotencyKey: 'new-coordinator-task'
   }))
+  const ownerConfirmedTask = await restarted.createTask(a.actor, {
+    projectId: project.projectId,
+    assigneeAgentId: agentB.agent.agentId,
+    title: 'Owner 确认的新 Coordinator 建议',
+    objective: 'Owner 创建正式 Task',
+    completionCriteria: ['Task 记录当前 Coordinator'],
+    dependencyTaskIds: [],
+    expectedProjectRevision: handedOff.revision,
+    idempotencyKey: 'owner-confirmed-task-after-handoff'
+  })
+  assert.equal(ownerConfirmedTask.createdByAgentId, agentC.agent.agentId)
 })
 
 test('8.4 canonical service bounds payloads and blocks sensitive Project Record material', async () => {
@@ -536,7 +547,7 @@ test('8.3 and 10.2 canonical human gateway binds source endpoint to user for per
   }))
 
   project = await rig.repository.getProject(project.projectId)
-  let taskB = await rig.service.createTask(agentA.actor, {
+  let taskB = await rig.service.createTask(a.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
     title: 'HumanNeeded 任务',

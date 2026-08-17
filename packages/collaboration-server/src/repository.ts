@@ -62,6 +62,7 @@ export interface CollaborationTransaction extends CollaborationReadRepository {
   lockIdempotency(actorKey: string, idempotencyKey: string): Promise<void>
   getProjectForUpdate(projectId: string): Promise<StoredProject | null>
   getTaskForUpdate(taskId: string): Promise<StoredTask | null>
+  listPendingHumanRequestsForTaskForUpdate(taskId: string): Promise<StoredHumanRequest[]>
   insertUser(user: StoredUser): Promise<void>
   updateUser(user: StoredUser, expectedRevision: number): Promise<void>
   insertChallenge(challenge: StoredChallenge): Promise<void>

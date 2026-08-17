@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { digestSecret } from './crypto.js'
 import { COLLABORATION_SCHEMA_VERSION, runCollaborationMigrations } from './migrations.js'
-import type { StoredResourceRef, StoredTask } from './model.js'
+import type { StoredHumanRequest, StoredResourceRef, StoredTask } from './model.js'
 import {
   createPostgresPool,
   formatPostgresPoolDiagnostic,
@@ -296,6 +296,59 @@ describe('PostgreSQL production transaction path', () => {
     const lock = writes.find(({ text }) => text.includes('FROM sciforge_collaboration.projects'))
     expect(lock?.text).toContain('FOR UPDATE')
     expect(lock?.values).toEqual([projectRow.project_id])
+  })
+
+  it('locks and revision-cancels every pending HumanNeeded request for a reassigned Task', async () => {
+    const at = '2026-08-15T02:00:00.000Z'
+    const requests: StoredHumanRequest[] = [1, 2].map((index) => ({
+      humanRequestId: `hrq_PostgresPending${index}`, projectId: 'prj_PostgresHuman1',
+      taskId: 'tsk_PostgresHuman1', targetUserId: 'usr_PostgresTarget1',
+      requestedByAgentId: 'agt_PostgresWorker1', requiredAssurance: 'verified',
+      prompt: `Pending question ${index}`, status: 'pending', revision: index,
+      expiresAt: '2026-08-15T03:00:00.000Z', createdAt: at, updatedAt: at
+    }))
+    const rows = requests.map((request) => ({
+      human_request_id: request.humanRequestId, project_id: request.projectId, task_id: request.taskId,
+      target_user_id: request.targetUserId, requested_by_agent_id: request.requestedByAgentId,
+      required_assurance: request.requiredAssurance, prompt: request.prompt, status: request.status,
+      revision: request.revision, expires_at: new Date(request.expiresAt),
+      created_at: new Date(request.createdAt), updated_at: new Date(request.updatedAt)
+    }))
+    const writes: Array<{ text: string; values: readonly unknown[] }> = []
+    const connection: SqlConnection = {
+      query: async (text, values = []) => {
+        writes.push({ text, values })
+        if (text.includes('FROM sciforge_collaboration.human_requests') && text.includes('FOR UPDATE')) {
+          return { rows, rowCount: rows.length }
+        }
+        return { rows: [], rowCount: text.includes('UPDATE sciforge_collaboration.human_requests') ? 1 : 0 }
+      },
+      release: () => undefined
+    }
+    const repository = new PostgresCollaborationRepository({
+      query: async () => ({ rows: [], rowCount: 0 }),
+      connect: async () => connection,
+      end: async () => undefined
+    })
+
+    await repository.transaction(async (tx) => {
+      const locked = await tx.listPendingHumanRequestsForTaskForUpdate('tsk_PostgresHuman1')
+      expect(locked).toEqual(requests)
+      for (const request of locked) {
+        await tx.updateHumanRequest({ ...request, status: 'cancelled',
+          revision: request.revision + 1, updatedAt: at }, request.revision)
+      }
+    })
+
+    const lock = writes.find(({ text }) => text.includes('FROM sciforge_collaboration.human_requests'))
+    expect(lock?.text).toContain("WHERE task_id=$1 AND status='pending'")
+    expect(lock?.text).toContain('ORDER BY created_at,human_request_id FOR UPDATE')
+    expect(lock?.values).toEqual(['tsk_PostgresHuman1'])
+    const cancellations = writes.filter(({ text }) => text.includes('UPDATE sciforge_collaboration.human_requests'))
+    expect(cancellations).toHaveLength(2)
+    expect(cancellations.map(({ values }) => values)).toEqual(requests.map((request) => [
+      request.humanRequestId, 'cancelled', request.revision + 1, at, request.revision
+    ]))
   })
 
   it('maps and revision-guards ResourceRef metadata in PostgreSQL', async () => {

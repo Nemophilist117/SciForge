@@ -1,5 +1,9 @@
 # 设计方案：以用户为中心的手机、SciForge 与云端协作
 
+> 本文是 `origin/gui` 既有的跨团队 umbrella 架构，用于说明各模块如何通过同一生产链路协作，不是 A 本轮的独占实现范围。A 只拥有云端合同、Collaboration Server、云端 Human/Zulip Provider、A-only 控制台、部署/API 和最终总集成；桌面协作领域、AgentRuntime、个人 Session、Coordinator 决策、Computer Use 与 OpenContent 分别保留在既有 SciForge 或 B–E 模块中。
+>
+> A 的发布门槛以任务 10.9 为准：canonical HTTPS 必须指向新 A，并由真实最新版 SciForge 走通“Zulip → A → 本地 SciForge → A → Zulip”。本文中的六用户和桌面/UI 场景属于跨团队最终验收基线，不是 A 单独开放服务的前置条件。
+
 ## 1. 设计原则
 
 本方案先确定协作中最重要的边界，再展开具体功能。所有后续实现都应遵守以下原则。
@@ -70,7 +74,7 @@ Project 可以包含多个 Session 和多个 Task。共享 Project Topic 不应�
 
 第一种是个人远程操作：用户从手机发消息，经过 Zulip 和云端协作服务，进入自己指定 SciForge 上的固定 Session，最终回复再返回手机。
 
-第二种是多人 Project 协作：用户从手机或桌面向 Project 提交目标、问题或意见，云端协作服务把它交给明确的 Coordinator，由 Coordinator 创建 Task 并分配给不同用户的 SciForge。
+第二种是多人 Project 协作：用户从手机或桌面向 Project 提交目标、问题或意见，云端协作服务把它交给明确的 Coordinator。Coordinator 形成 Task 和执行者建议，Project Owner 确认后，云端才创建正式 Task 并路由给对应 SciForge。
 
 ## 3. 协作个体的定义
 
@@ -136,7 +140,7 @@ Project Topic 是多人 Project 的沟通入口，不是某个人的私人 Sessi
 
 - 回答问题；
 - 请求澄清；
-- 创建或调整 Task；
+- 建议创建、重试、改派或取消 Task；
 - 把内容记录为候选观察；
 - 拒绝越权或与 Project 无关的指令。
 
@@ -206,23 +210,25 @@ Project 成员列表记录参与的用户，而不是只记录机器。界面把
 
 - 理解 Project 目标；
 - 维护正式计划；
-- 创建和分配 Task；
+- 提议 Task、执行者、重试、改派和取消；
 - 检查 Worker 返回的结果；
-- 接受正式 Project 记录；
+- 接受 `observation` 和 `task_result` Project 记录；
 - 把无法自动解决的问题交给目标用户；
-- 形成最终总结。
+- 起草最终总结，交由 Project Owner 确认。
 
 Coordinator 是一种 Project 角色，不是一种特殊版本的 SciForge。同一台 SciForge 可以在自己的 Project 中担任 Coordinator，也可以在其他 Project 中担任 Worker。
+
+Project Owner 负责确认首次任务分配、变更执行者的改派、取消，以及 `proposal`、`decision`、`summary` 等正式 Project 结论。换执行者的改派可由 Owner 从 `offered`、`accepted`、`running`、`needs_human`、`failed` 或 `rejected` 主动发起；`succeeded/cancelled` 不可改派。同一执行者的重试仅适用于 `failed/rejected`，可由 Owner 或当前 Coordinator 发起。云端只校验并保存这些已确认状态，不实现 Coordinator 的任务拆分或建议逻辑。
 
 ### 6.3 Worker 只处理明确 Task
 
 Worker 收到的每个 Task 都明确包含目标、执行者、当前版本、完成条件和状态。
 
-Worker 可以接受、拒绝、执行、报告失败、提交结果或请求真人帮助，但不能直接修改全局计划，也不能向其他 Worker 广播新的执行指令。如果需要其他能力，Worker 向 Coordinator 提出建议，由 Coordinator 决定是否创建新 Task。
+Worker 可以接受、拒绝、执行、报告失败、提交结果或请求真人帮助，但不能直接修改全局计划，也不能向其他 Worker 广播新的执行指令。如果需要其他能力，Worker 向 Coordinator 提出建议；Coordinator 可以形成新 Task 建议，Project Owner 确认后才由云端创建正式 Task。
 
 ### 6.4 使用星形协作而不是自由群聊
 
-所有正式任务都由 Coordinator 分配，Worker 把结果返回 Coordinator。这种结构能避免：
+所有正式任务都先由 Coordinator 提议，再由 Project Owner 确认并通过云端分配；Worker 把结果返回 Coordinator。这种结构能避免：
 
 - 多个 Agent 重复执行同一工作；
 - Worker 相互创建无界任务；
@@ -262,7 +268,7 @@ Agent 离线时，Task 不会丢失；重新连接后从上次确认的位置继
 - 正式决定；
 - 阶段总结和最终总结。
 
-Worker 可以提交候选内容，但只有 Coordinator 或有权限的真人能把它接受为正式决定或总结。
+Worker 可以提交候选内容。`observation` 和 `task_result` 可由 Coordinator 或 Project Owner 接受；`proposal`、`decision` 和 `summary` 只能由 Project Owner 接受。
 
 ### 7.5 人类消息入口
 
@@ -441,6 +447,7 @@ Project 页面集中展示：
 - 成员及各自手机、Agent 状态；
 - 当前 Coordinator；
 - Task、执行者和依赖；
+- 等待 Project Owner 确认的任务分配、改派、取消或正式结论；
 - 需要真人处理的问题；
 - 已接受的观察、决定和总结。
 
@@ -461,6 +468,8 @@ Project 页面集中展示：
 ### 14.3 SciForge 协作领域
 
 同一个领域包同时拥有桌面后端和界面，负责 Agent 注册、Session 投影、本地队列、Task 接入和协作页面。它通过标准领域清单安装，不修改 Host 中央功能表。
+
+这是 `origin/gui` 既有的桌面生产能力及 C/客户端责任边界。A 只维护它所调用的云端公共合同，不在云端重写该领域、AgentRuntime、SDK 或设备适配。
 
 ### 14.4 IM Provider 适配器
 
@@ -494,6 +503,8 @@ Zulip Server 和云端协作服务可以部署在同一台阿里云 ECS 上，�
 
 ## 17. 分阶段落地
 
+以下阶段描述整个 umbrella 方案的跨团队形成过程。阶段三的桌面/个人 Session、阶段四的 Coordinator/Worker 业务流程和阶段六的多用户最终试用不属于 A 本轮需要重新实现的内容；A 本轮只收口相应的云端公共边界和任务 10.9 真实接线。
+
 ### 阶段一：统一身份
 
 实现用户、手机端点、Agent 所有权、主要 Agent 和撤销流程。此阶段先回答清楚“谁是谁、哪台机器属于谁”。
@@ -508,7 +519,7 @@ Zulip Server 和云端协作服务可以部署在同一台阿里云 ECS 上，�
 
 ### 阶段四：多人 Project 与 Task
 
-实现成员、Coordinator、Worker、Task、Project 记录、并行执行和手动 Coordinator 转交。
+实现成员、Coordinator、Worker、Owner 确认后的 Task、Project 记录、并行执行和手动 Coordinator 转交。
 
 ### 阶段五：真人问题与 Project Topic
 
@@ -516,11 +527,13 @@ Zulip Server 和云端协作服务可以部署在同一台阿里云 ECS 上，�
 
 ### 阶段六：删除旧路径并正式验收
 
-删除旧实现，完成源代码和打包应用验证，并用六名用户进行端到端测试。
+删除旧实现，完成源代码和打包应用验证，并用六名专用 QA 用户进行可选的跨团队端到端测试。该自动化 harness 只能使用测试负责人控制的专用账号和受限 secret 文件，不得收集普通团队成员的 Zulip API key，也不能以 API/Agent Bearer 模拟结果替代最新版 SciForge 的真实执行证据。
 
 阶段用于安排开发顺序，不用于保留两套长期生产逻辑。
 
 ## 18. 最终验收标准
+
+以下是 umbrella 方案的跨团队最终验收标准，不是 A 本轮发布门槛。A 的独立完成标准是任务 10.9；六用户测试可在各模块正式就绪后由团队另行执行。
 
 方案完成后，应满足以下可观察结果：
 
@@ -529,7 +542,7 @@ Zulip Server 和云端协作服务可以部署在同一台阿里云 ECS 上，�
 3. 用户 B 的 Agent 不会因为在线或处于同一 Stream 而收到 A 的个人任务。
 4. 桌面和手机看到同一个个人 Session 中相同顺序的用户消息与最终回复，且没有重复。
 5. Project Topic 中 A、B、C 的消息保留各自身份，进入云端 Project，而不是任意一个人的私人 Session。
-6. Coordinator 可以把两个独立 Task 分配给不同用户的 Agent，并行收集结果。
+6. Coordinator 可以提出两个独立 Task 和执行者建议；Project Owner 确认后，云端把它们分配给不同用户的 Agent 并行执行，Coordinator 收集结果。
 7. 用户 B 的 Task 需要决定时，只通知 B；无权成员不能代答。
 8. 手机触发的高风险操作仍遵守本地权限策略。
 9. Agent、云端或 Zulip 短暂断线后可以恢复，不重复执行消息或 Task。

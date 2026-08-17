@@ -125,7 +125,10 @@ projection 同时只运行一个 turn，后到消息可见地排队；不同 pro
 ## 7. Project 与 Task
 
 - Project 成员是 User；Coordinator 和 Task assignee 是 Agent，二者不可互换。
-- 每个 Project 同时只有一个 active Coordinator。只有它能维护正式计划、创建或改派 Task、接受结果。
+- 每个 Project 同时只有一个 active Coordinator。Coordinator 可在本地维护计划和建议，但正式
+  Task 创建、更换 assignee 和取消必须由 Project Owner User 确认并提交。
+- 同一 assignee 的失败重试可由 Owner 或 active Coordinator 发起；`observation` 和 `task_result`
+  可由 Owner 或 active Coordinator 验收，`proposal`、`decision` 和 `summary` 只能由 Owner 验收。
 - Worker 只处理明确分配给自己的 Task，可提交结果、观察或子任务建议，不能直接改写全局计划。
 - Coordinator 转交必须由有权用户显式完成；旧 Coordinator 随后写入会被拒绝。
 - Project Topic 中每条输入都保留 senderUserId，并进入 Project 队列；它不会进入成员的私人 Session。

@@ -60,8 +60,8 @@ function requireDriver(driver) {
   return driver
 }
 
-test('10.3 real Zulip: six users, two personal sessions, Project workers, directed human answer and coordinator handoff', {
-  skip: enabled ? false : 'set SCIFORGE_COLLAB_ZULIP_E2E=1 to run real external acceptance'
+test('optional cross-team QA: six dedicated Zulip identities exercise the A server boundary without claiming SciForge E2E', {
+  skip: enabled ? false : 'set SCIFORGE_COLLAB_ZULIP_E2E=1 only with dedicated QA identities and owner-controlled key files'
 }, async () => {
   const driverPath = process.env.SCIFORGE_COLLAB_ZULIP_DRIVER
   assert.ok(driverPath, 'SCIFORGE_COLLAB_ZULIP_DRIVER must point to the production acceptance adapter')
@@ -221,16 +221,22 @@ test('10.3 real Zulip: six users, two personal sessions, Project workers, direct
     to: c
   }))
   assert.equal(handedOff.coordinatorAgentId, c.agentId)
-  await expectCode('COORDINATOR_REQUIRED', () => driver.createTaskAsAgent({
+  await expectCode('OWNER_CONFIRMATION_REQUIRED', () => driver.createTaskAsAgent({
     agent: a,
     project,
     assignee: b,
     label: 'old-coordinator-must-fail'
   }))
-  await safeStep('new coordinator creates task', () => driver.createTaskAsAgent({
+  await expectCode('OWNER_CONFIRMATION_REQUIRED', () => driver.createTaskAsAgent({
     agent: c,
     project,
     assignee: b,
-    label: 'new-coordinator-succeeds'
+    label: 'new-coordinator-still-requires-owner'
+  }))
+  await safeStep('owner confirms task after coordinator handoff', () => driver.createTask({
+    coordinator: c,
+    project,
+    assignee: b,
+    label: 'owner-confirmed-after-handoff'
   }))
 })

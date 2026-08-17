@@ -25,12 +25,15 @@ A 核心只保存协作所需身份、项目、任务、持久 Inbox、人工确
 
 ## 🌐 唯一业务入口
 
+正式产品链路中，Zulip 事件由 A 云端 Provider/adapter 解析并写入本公共边界，本地最新版 SciForge 只通过 A 的 HTTPS/WSS 交换任务、状态和结果，不直接调用 Zulip。返回方向为“本地 SciForge → A 云端服务 → Zulip”；SSH tunnel 只是服务器预发布诊断手段，不是第二个产品入口。
+
 除健康检查外，所有业务查询和写操作都通过同一个严格信封发送：
 
 | 用途 | 方法与地址 | 说明 |
 |---|---|---|
 | 业务命令与查询 | `POST https://collaboration.example.invalid/v1/commands` | 由 JSON 的 `type` 区分 command；不存在 `/v1/projects`、`/v1/tasks` 等独立 REST 路由 |
 | 实时唤醒 | `GET wss://collaboration.example.invalid/v1/events` | WebSocket Upgrade；只通知 Inbox 有新消息，不传递完整领域事实 |
+| A 网页控制台 | `GET https://collaboration.example.invalid/console/` | 同源薄控制面；凭据仅存页面内存，不提供 B–E 私有业务逻辑 |
 | 存活检查 | `GET https://collaboration.example.invalid/healthz` | 仅表示进程可响应 |
 | 数据库就绪检查 | `GET https://collaboration.example.invalid/readyz` | 只表示数据库 schema 与关键约束就绪；Provider 健康由部署门禁独立检查 |
 
@@ -104,14 +107,14 @@ Idempotency-Key: idem_project_create_demo_0001
 | 2. Human—设备绑定 | `endpoint.challenge.create`、`endpoint.transition`、`endpoint.transfer`；`agent.register`、`agent.heartbeat`、`agent.rotate_credential`、`agent.owner.transfer`、`agent.revoke`；`credential.revoke_current`；`participant.get`、`participant.update_primary` | 绑定 owner user；心跳为对应 agent；当前 user/agent Bearer 只能撤销自身；Participant 仅本人 | `pairing.begun`、`rest.entity(...)`、`participant.snapshot` 或 `rest.receipt`；注册/轮换凭据只在成功响应中返回一次 | 当前可用，但绑定闭环依赖 provider；`pairing.verify` 与 `endpoint.bind` 不能由普通 HTTP 客户端直接调用 |
 | 3. 项目 | `project.create`、`project.get`、`project.transition`、`project.transfer_coordinator`；可选 provider 映射为 `project.endpoint.bind/update/get` | 创建、状态和 Coordinator 变更为 owner user；读取为 active member 的 user 或 agent | `rest.entity(project)` 或 `rest.entity(project_endpoint_binding)` | 当前可用；没有 `project.list` |
 | 4. 成员 | `project.create.memberUserIds`；`project.get` | 创建为 owner user；读取为 active member | `project.memberUserIds` | 当前只支持创建时固定成员；没有成员 add/remove、角色修改或独立成员列表 command |
-| 5. Task | `task.create`、`task.get`、`task.transition`、`task.retry` | 创建和 retry/reassign 为 Project Coordinator Agent；读取为 active member；执行状态更新通常为当前 assignee Agent；`cancelled` 为 Coordinator Agent | `rest.entity(task)` | 当前可用；`task.retry` 只接受 `failed/rejected`，同一 assignee 为重试、不同 assignee 为改派；没有 `task.list` |
+| 5. Task | `task.create`、`task.get`、`task.transition`、`task.retry` | 创建、换 assignee 改派和 `cancelled` 为 Project owner user；同 assignee 重试为 owner user 或当前 Coordinator Agent；读取为 active member；执行状态更新通常为当前 assignee Agent | `rest.entity(task)` | 当前可用；同 assignee 重试仅接受 `failed/rejected`；Owner 换 assignee 可从 `offered/accepted/running/needs_human/failed/rejected` 主动改派，`succeeded/cancelled` 拒绝；没有 `task.list` |
 | 6. 消息 | `project.input.create`、`projection.message.publish`、`inbox.pull`、`inbox.ack` | Project 输入为 verified `human_endpoint`；投影发布为所属 agent；Inbox 为对应 user 或 agent | `rest.entity(project_input)`、`rest.receipt`、`rest.inbox_page` | 合同当前存在；前两者的端到端交付依赖 provider adapter；A 不提供完整聊天历史查询 |
 | 7. 进度 | `task.progress.report` | 当前 assignee Agent；Task 必须为 `running` | 更新后的 `rest.entity(task)`，含 `progress` | 当前可用；只接受 `percent` 与安全摘要，不接收日志或 transcript |
 | 8. 能力查询 | `project.capability_directory.get` | 该 active Project 的 active member user 或 agent | `rest.entity(project_capability_directory)` | 当前可用；只返回 active Agent 的公共能力，不提供全局 Agent 目录 |
 | 9. 人工确认 | `human.needed.create`、`human.answer` | 前者为当前 assignee Agent，目标必须是 active member；后者仅为目标用户对应的 verified `human_endpoint` | `rest.entity(human_needed)`、`rest.entity(human_answer)`，同时产生持久 Inbox 消息 | `human.needed.create` 在同一 Task 上将 `running` 改为 `needs_human` 并递增 Task revision；回答不会自动恢复 Task |
 | 10. 资源引用 | `resource.create`、`resource.get`、`resource.invalidate` | active Project member 的 user 或 agent；读取为任意 active member；Worker Agent 写入必须绑定自己已接受的 active Task | `rest.entity(resource_ref)` | 本地已验收；只接受元数据与 HTTPS 引用，并保存 actor 与 Task revision provenance |
-| 11. 任务路由 | `task.create` 或 `task.retry` 后向当前 assignee 写入唯一 `task.offered`；assignee 用 `inbox.pull`、`task.get` 获取工作 | Coordinator Agent 创建、重试或改派；目标为 active member 所属 active Agent | 更新后的 Task；路由结果为有序 `inbox_message` | 当前支持首次路由与 terminal Task 的显式重试/改派；没有独立 Assignment 实体 |
-| 12. 结果回传 | `task.transition(status="succeeded", resultSummary=...)`；需要共享记录时使用 `project_record.submit/get/accept`；产物另建 ResourceRef | Task 结果为当前 assignee Agent；Record 提交/读取为 active member user/agent；验收为 owner user 或 Coordinator Agent | 更新后的 Task；`rest.entity(project_record)`；可关联 `resource_ref` | 当前可用；没有独立 `TaskResult`、`evidenceRefs` 或正文上传 |
+| 11. 任务路由 | `task.create` 或 `task.retry` 后向当前 assignee 写入唯一 `task.offered`；assignee 用 `inbox.pull`、`task.get` 获取工作 | 首次分派与换人改派为 owner user；同一 assignee 重试为 owner user 或 Coordinator Agent；目标为 active member 所属 active Agent | 更新后的 Task；路由结果为有序 `inbox_message` | 当前支持首次路由、失败同节点重试和 Owner 对非终态/失败 Task 的主动改派；没有独立 Assignment 实体 |
+| 12. 结果回传 | `task.transition(status="succeeded", resultSummary=...)`；需要共享记录时使用 `project_record.submit/get/accept`；产物另建 ResourceRef | Task 结果为当前 assignee Agent；Record 提交/读取为 active member user/agent；`observation/task_result` 可由 owner 或 Coordinator 验收，`proposal/decision/summary` 仅 owner 验收 | 更新后的 Task；`rest.entity(project_record)`；可关联 `resource_ref` | 当前可用；没有独立 `TaskResult`、`evidenceRefs` 或正文上传 |
 
 ### 本分支新增的冻结字段
 
@@ -291,7 +294,7 @@ sequenceDiagram
 
 ### 创建并路由 Task
 
-调用 actor 必须是 Project 当前 Coordinator Agent。`expectedRevision` 是当前 Project revision；成功后 A 创建 Task，并向目标 Agent 写入 `task.offered`。
+调用 actor 必须是 Project owner user，表示负责人已确认这次明确分派。`expectedRevision` 是当前 Project revision；成功后 A 创建 Task，并向目标 Agent 写入 `task.offered`。Task 中的 `createdByCoordinatorAgentId` 仍记录 Project 当前 Coordinator，A 不保存 Coordinator 的拆分、推荐或推理过程。
 
 ```json
 {
@@ -312,9 +315,13 @@ sequenceDiagram
 }
 ```
 
-### 重试或改派 terminal Task
+### 重试或 Owner 主动改派 Task
 
-调用 actor 必须是 Project 当前 Coordinator Agent。Task 只能处于 `failed` 或 `rejected`；`assigneeAgentId` 与原值相同表示重试，不同表示改派。服务在同一事务中锁定 Project 和 Task，清空旧进度、结果与失败码，增加 attempt/revision，并只向新 assignee 写入一条新 revision 的 `task.offered`。
+`assigneeAgentId` 与当前值相同表示同一节点重试：Task 只能处于 `failed` 或 `rejected`，可由 Project owner user 或当前 Coordinator Agent 调用。
+
+`assigneeAgentId` 与当前值不同表示换人/节点改派：只能由 Project owner user 调用，可从 `offered`、`accepted`、`running`、`needs_human`、`failed` 或 `rejected` 主动改派；`succeeded` 和 `cancelled` 不能改派。因此 Owner 无需先把离线或不再适合的 Worker 人工做成失败终态。
+
+两种模式都会在同一事务中锁定 Project 和 Task，检查 active Project、当前 revision 和重试预算，清空旧 progress、resultSummary、safeFailureCode 与 completedAt，增加 attempt/revision，然后只向当前 assignee 写入一条新 revision 的 `task.offered`。换 assignee 还会取消该 Task 全部 pending HumanRequest；原问题后续回答会在公共错误信封中返回 `expired`，不会改变新 Task 状态。
 
 ```json
 {
@@ -329,6 +336,8 @@ sequenceDiagram
 ```
 
 两个请求并发使用同一 `expectedRevision` 时最多一个成功；其余请求返回包含 `currentRevision` 的 `revision_conflict`。改派成功后，旧 Worker 即使知道新 revision，也不能继续提交 progress、ResourceRef 或 Task result。
+
+取消 Task 继续使用 `task.transition(status="cancelled")`，但调用 actor 必须是 Project owner user。Coordinator 可以提出取消建议，不能使用 Agent credential 直接改变 Task 的正式取消状态。
 
 ### 回传最终结果
 
@@ -410,7 +419,7 @@ Worker 确认答案仍适用于当前 Task 后，使用 `task.get` 响应中的�
 
 ### 读取 ProjectRecord
 
-`project_record.submit` 成功后，Coordinator 会收到只含定位字段的 `project_record.submitted`。任意 active Project member 的 user 或 agent 可按 ID 读取完整严格实体，再决定是否由 owner user 或 Coordinator Agent 调用 `project_record.accept`：
+`project_record.submit` 成功后，Coordinator 会收到只含定位字段的 `project_record.submitted`。任意 active Project member 的 user 或 agent 可按 ID 读取完整严格实体。`observation` 与 `task_result` 可由 owner user 或当前 Coordinator Agent 调用 `project_record.accept`；`proposal`、`decision` 与 `summary` 只能由 owner user 接受，其中被接受的 `proposal` 会成为正式 `decision`：
 
 ```json
 {
@@ -547,6 +556,7 @@ user 恢复访问必须重新走正式 pairing。Agent 要保留原 `agentId`，
 | `revision_conflict` | 409 | true | 重新读取并重新决策；使用新的幂等 key |
 | `idempotency_conflict` | 409 | false | 不得复用该 key；核对原请求 |
 | `invalid_state_transition` | 409 | false | 按最新状态机重新规划 |
+| `expired` | 410 | false | 不得重放旧回答或请求；重新读取当前 Task/HumanNeeded |
 | `payload_too_large` | 413 | false | 只提交有界摘要或引用 |
 | `rate_limited` | 429 | true | 按退避策略重试 |
 | `provider_unavailable` | 503 | true | provider 恢复后重试；不要绕过验证边界 |
@@ -558,7 +568,7 @@ user 恢复访问必须重新走正式 pairing。Agent 要保留原 `agentId`，
 以下能力没有公共 command，不能通过直接访问 A 数据库补齐：
 
 - Project 列表、Task 列表、成员增删/角色变更；
-- 独立 Assignment 实体与非 terminal Task 的强制改派；
+- 独立 Assignment 实体；
 - HumanNeeded 的独立 get/list，以及普通 user Bearer 的回答入口；
 - ProjectRecord、ResourceRef 和 ProjectInput 的列表查询；
 - 独立 TaskResult、证据正文、附件上传和全文搜索；
@@ -576,7 +586,8 @@ B、C、D、E 后续只通过本公共合同交换必要字段：
 
 - B 的任务拆分策略、推理过程和验收提示词不是 A 公共字段；
 - C 的本地 Runtime、VPN、GPU、Slurm、文件路径和工具日志不是 A 公共字段；
-- D 的 Zulip Bot 事件、签名细节、Topic 解析和手机 UI 状态不是 A 公共字段；
+- A 云端 Zulip Provider 拥有 Bot 事件验证、签名细节、locator/Topic 解析和出站投影；这些 provider-private 细节不进入核心公共字段；
+- D 只通过公共边界提供 Computer Use 和跨端稳定性的复现、验证与结果，不承担 A 的 Zulip Bot/Topic adapter 实现；
 - E 的 OpenContent 正文、上传协议、访问凭据和 provider 私有状态不是 A 公共字段。
 
 适配器可以在自己的命名空间保留私有扩展，但不得把它们加入核心枚举、要求其他成员读取 A 数据库，或把凭据、正文和本地绝对路径塞入公共 command。只有多方真实联调都需要的字段，才通过兼容性评审进入下一版公共合同。

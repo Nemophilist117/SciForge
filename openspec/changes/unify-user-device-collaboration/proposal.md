@@ -1,5 +1,9 @@
 # 变更提案：统一用户、手机与 SciForge 的多人协作身份
 
+> 范围说明：这是随 `origin/gui` 形成的跨团队 umbrella 目标方案，不等同于 A 本轮独自交付的工作清单。桌面 `@sciforge/domain-collaboration`、AgentRuntime 接入、个人 Session 投影、Coordinator 决策工作流、Computer Use 和 OpenContent 均由既有 SciForge 或对应负责人拥有；A 不复制或接管这些实现。
+>
+> A 本轮发布门槛只覆盖云端公共合同、Collaboration Server、云端 Human/Zulip Provider、A-only 网页控制台、部署与恢复资产、公共 API/示例，以及任务 10.9 的 canonical HTTPS 真实接线。下文其余能力用于说明系统级接口关系和 `origin/gui` 既有基线，不因出现在本提案中而成为 A 的发布责任。
+
 ## 为什么要做
 
 SciForge 需要同时支持两个场景：用户可以在手机上继续操作自己电脑中的 Session；多个用户也可以让各自的 SciForge 围绕同一个 Project 分工协作。此前这两个场景由两套提案分别描述：手机配对以 SciForge 安装实例为主体，多用户协作则以云端 User 和 Agent 节点为主体。两者没有定义同一个稳定的人类身份，也没有规定 Zulip 发送者如何映射到云端 User、如何找到该用户拥有的 SciForge，以及群聊消息究竟应进入谁的 Session。
@@ -18,6 +22,8 @@ SciForge 需要同时支持两个场景：用户可以在手机上继续操作�
 - 建立稳定路由规则：个人消息按 `userId + projectionId` 路由；Project 消息按 `projectId + senderUserId` 鉴权后写入 Project 信箱；Task 按 `assigneeAgentId` 投递。
 - 让桌面与手机共享同一条个人 Session 逻辑消息流，使用 receipt、去重、每 Session 顺序队列和重启恢复保证幂等。
 - 让多个用户各自的 Agent 通过一个云端协作内核共享 Project、Task、Project Record 和持久信箱；云端不运行特殊 LLM Agent。
+- 把 Coordinator 的推荐与正式的人类决定分开：Project owner user 确认首次 Task 分派、对非终态或失败 Task 换 assignee 的主动改派、Task 取消以及 proposal/decision/summary；同 assignee 重试仅适用于 `failed/rejected`，可由 owner 或当前 Coordinator 发起。
+- 让 Project Record 按语义分权：Coordinator 可验收 observation 和 task_result，最终 proposal、decision 与 summary 只由 Project owner 接受；云端不实现任务拆分、人员推荐或结果业务判断。
 - 明确身份与授权分离：手机和机器属于同一用户，不代表 Zulip 登录具备本机高风险能力的批准强度；远程批准必须由 capability policy 显式允许，否则保持桌面待审批。
 - 新建一个统一协作领域包拥有桌面端身份、节点、Session 投影、同步和协作 UI；Host 只依赖通用 SDK 合同，不保留旧 remote-channel、Zulip Host runtime 或第二套镜像路径。
 - 以本提案作为手机远程 Session 与多用户 Agent 协作的唯一目标方案，后续实现只使用这一套身份、路由和状态合同。
@@ -44,6 +50,7 @@ SciForge 需要同时支持两个场景：用户可以在手机上继续操作�
 
 - 新增 `@sciforge/collaboration-contracts`、`@sciforge/collaboration-server` 和 `@sciforge/domain-collaboration`；Zulip 支持作为可安装的 provider adapter contribution 接入统一合同。
 - 云端服务保存用户、端点绑定、Agent、个人 Session projection 的非敏感远端映射、Project、Task、Project Record、信箱和 receipt；不保存本地工作区、模型/API 凭据、完整私人对话或任意本地文件。
+- 云端只保存 owner 已确认的正式 Task 分派与改派结果；Coordinator 的拆分策略、推荐理由和确认界面属于调用方模块，不进入云端核心合同。
 - Provider service credential 保存在云端 secret manager；本地 SciForge 只保存本机 Agent 设备凭据、projection 到本地 thread 的映射、个人 Session、工作区、工具权限、运行状态和详细执行日志。
 - Zulip Server 仍是消息服务，不成为 Project、Task 或 Agent 上下文的事实源；云端 PostgreSQL 是协作状态的事实源，本地 AgentRuntime thread 是个人 Session 的事实源。
 - PoC 默认一名用户绑定一个主要手机 IM 身份和一个 primary SciForge Agent；数据模型允许后续增加辅助端点或节点，但所有路由仍必须显式选择目标，不使用“最近在线”猜测。

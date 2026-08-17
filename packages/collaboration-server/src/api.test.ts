@@ -36,6 +36,47 @@ afterEach(async () => {
 })
 
 describe('production HTTP anonymous bootstrap boundary', () => {
+  it('serves the memory-only A console under the configured base path with strict browser headers', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const server = createCollaborationHttpServer({
+      service,
+      authentication,
+      readiness: async () => true,
+      basePath: '/collaboration'
+    })
+    servers.push(server)
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const address = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${address.port}`
+
+    const redirect = await fetch(`${baseUrl}/collaboration/console`, { redirect: 'manual' })
+    expect(redirect.status).toBe(308)
+    expect(redirect.headers.get('location')).toBe('/collaboration/console/')
+
+    const page = await fetch(`${baseUrl}/collaboration/console/`)
+    expect(page.status).toBe(200)
+    expect(page.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+    expect(page.headers.get('x-frame-options')).toBe('DENY')
+    const html = await page.text()
+    expect(html).toContain('SciForge · 协同控制塔')
+    expect(html).toContain('href="app.css"')
+    expect(html).not.toContain('localStorage')
+
+    const script = await fetch(`${baseUrl}/collaboration/console/app.js`)
+    expect(script.status).toBe(200)
+    expect(script.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
+    expect(await script.text()).toContain("consolePath.replace(/\\/console\\/$/u, '/v1/commands')")
+
+    const missing = await fetch(`${baseUrl}/collaboration/console/missing`)
+    expect(missing.status).toBe(404)
+  })
+
   it('exposes only catalog and pairing begin/redeem without a bearer while keeping bounds and route limits', async () => {
     const repository = new FakeCollaborationRepository()
     const service = new CollaborationService({ repository, now })
@@ -167,7 +208,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
       memberUserIds: [owner.userId, worker.userId], coordinatorAgentId: ownerAgent.agent.agentId,
       idempotencyKey: 'idem_api_resource_project_01'
     })
-    const task = await service.createTask(coordinator, {
+    const task = await service.createTask(owner.actor, {
       projectId: project.projectId, assigneeAgentId: workerAgent.agent.agentId,
       title: 'Publish ResourceRef', objective: 'Publish one HTTPS metadata reference.',
       completionCriteria: ['Reference resolves through HTTPS'], dependencyTaskIds: [],
@@ -185,6 +226,38 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     })
     const address = server.address() as AddressInfo
     const baseUrl = `http://127.0.0.1:${address.port}`
+
+    const currentProject = repository.state.projects.get(project.projectId)
+    if (!currentProject) throw new Error('Expected current Project')
+    const governedTaskBody = {
+      protocolVersion: '1.0', requestId: 'req_ApiGovernedTask01', type: 'task.create',
+      idempotencyKey: 'idem_api_governed_task_01', projectId: project.projectId,
+      expectedRevision: currentProject.revision, assigneeAgentId: workerAgent.agent.agentId,
+      title: 'Owner-confirmed API task', objective: 'Verify the authenticated human assignment boundary.',
+      completionCriteria: ['Agent cannot create or cancel the assignment'], dependencyTaskIds: []
+    }
+    const agentTaskCreate = await postCommand(baseUrl, {
+      ...governedTaskBody, requestId: 'req_ApiAgentTaskCreate1', idempotencyKey: 'idem_api_agent_task_create_01'
+    }, ownerAgent.deviceCredential)
+    expect(agentTaskCreate.status).toBe(403)
+    await expect(agentTaskCreate.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+    const ownerTaskCreate = await postCommand(baseUrl, governedTaskBody, owner.userCredential)
+    expect(ownerTaskCreate.status).toBe(200)
+    const governedTask = await ownerTaskCreate.json() as { entity: { taskId: string; revision: number } }
+    const agentTaskCancel = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiAgentTaskCancel1', type: 'task.transition',
+      idempotencyKey: 'idem_api_agent_task_cancel_01', taskId: governedTask.entity.taskId,
+      expectedRevision: governedTask.entity.revision, status: 'cancelled'
+    }, ownerAgent.deviceCredential)
+    expect(agentTaskCancel.status).toBe(403)
+    await expect(agentTaskCancel.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+    const ownerTaskCancel = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiOwnerTaskCancel1', type: 'task.transition',
+      idempotencyKey: 'idem_api_owner_task_cancel_01', taskId: governedTask.entity.taskId,
+      expectedRevision: governedTask.entity.revision, status: 'cancelled'
+    }, owner.userCredential)
+    expect(ownerTaskCancel.status).toBe(200)
+    await expect(ownerTaskCancel.json()).resolves.toMatchObject({ entity: { status: 'cancelled' } })
 
     const acceptedResponse = await postCommand(baseUrl, {
       protocolVersion: '1.0', requestId: 'req_ApiTaskAccepted1', type: 'task.transition',
@@ -221,7 +294,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     const capability = JSON.parse(capabilityText) as { entity: { type: string; projectId: string;
       projectRevision: number; agents: Array<{ agentId: string; ownerUserId: string }> } }
     expect(capability.entity).toMatchObject({ type: 'project_capability_directory', projectId: project.projectId,
-      projectRevision: project.revision + 1 })
+      projectRevision: project.revision + 2 })
     expect(capability.entity.agents).toEqual(expect.arrayContaining([
       expect.objectContaining({ agentId: ownerAgent.agent.agentId, ownerUserId: owner.userId }),
       expect.objectContaining({ agentId: workerAgent.agent.agentId, ownerUserId: worker.userId })
@@ -336,7 +409,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     } })
   })
 
-  it('publishes idempotent Coordinator retry and current-bearer revocation without accepting caller identity', async () => {
+  it('publishes owner-confirmed reassignment and current-bearer revocation without accepting caller identity', async () => {
     const repository = new FakeCollaborationRepository()
     const service = new CollaborationService({ repository, now })
     const authentication = new AuthenticationService(repository, now)
@@ -360,7 +433,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
       budgets: { maxTasks: 4, maxTasksPerRound: 4, maxTaskRetries: 2, maxCoordinationRounds: 2 },
       idempotencyKey: 'idem_api_command_project_01'
     })
-    const task = await service.createTask(coordinator, {
+    const task = await service.createTask(owner.actor, {
       projectId: project.projectId, assigneeAgentId: workerAgent.agent.agentId,
       title: 'Fail safely', objective: 'Produce a bounded failure for reassignment.',
       completionCriteria: ['Failure is machine readable'], dependencyTaskIds: [],
@@ -394,7 +467,13 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     expect(workerRetry.status).toBe(403)
     await expect(workerRetry.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
 
-    const retriedResponse = await postCommand(baseUrl, retryBody, ownerAgent.deviceCredential)
+    const coordinatorReassignment = await postCommand(baseUrl, {
+      ...retryBody, requestId: 'req_ApiTaskRetryAgent1', idempotencyKey: 'idem_api_task_retry_agent_01'
+    }, ownerAgent.deviceCredential)
+    expect(coordinatorReassignment.status).toBe(403)
+    await expect(coordinatorReassignment.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+
+    const retriedResponse = await postCommand(baseUrl, retryBody, owner.userCredential)
     expect(retriedResponse.status).toBe(200)
     const retried = await retriedResponse.json() as { entity: { revision: number } }
     expect(retried).toMatchObject({ entity: {
@@ -403,7 +482,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     } })
     const replayedResponse = await postCommand(baseUrl, {
       ...retryBody, requestId: 'req_ApiTaskRetryReplay1'
-    }, ownerAgent.deviceCredential)
+    }, owner.userCredential)
     expect(replayedResponse.status).toBe(200)
     await expect(replayedResponse.json()).resolves.toMatchObject({ entity: {
       taskId: task.taskId, revision: retried.entity.revision, attempt: 2
@@ -417,7 +496,7 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     const staleRetry = await postCommand(baseUrl, {
       ...retryBody, requestId: 'req_ApiTaskRetryStale01', idempotencyKey: 'idem_api_task_retry_stale_01',
       assigneeAgentId: workerAgent.agent.agentId
-    }, ownerAgent.deviceCredential)
+    }, owner.userCredential)
     expect(staleRetry.status).toBe(409)
     await expect(staleRetry.json()).resolves.toMatchObject({ error: {
       code: 'revision_conflict', expectedRevision: failed.revision, currentRevision: retried.entity.revision
@@ -429,6 +508,38 @@ describe('production HTTP anonymous bootstrap boundary', () => {
     }, workerAgent.deviceCredential)
     expect(oldWorkerWrite.status).toBe(403)
     await expect(oldWorkerWrite.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } })
+
+    const currentProject = (await service.getProject(owner.actor, project.projectId)).project
+    const activeTask = await service.createTask(owner.actor, {
+      projectId: project.projectId, assigneeAgentId: workerAgent.agent.agentId,
+      title: 'Reassign while active', objective: 'Exercise owner-confirmed proactive reassignment over HTTP.',
+      completionCriteria: ['Only the owner can change the current assignee'], dependencyTaskIds: [],
+      expectedProjectRevision: currentProject.revision, idempotencyKey: 'idem_api_active_reassign_task_01'
+    })
+    const activeReassignmentBody = {
+      protocolVersion: '1.0', requestId: 'req_ApiActiveReassign1', type: 'task.retry',
+      idempotencyKey: 'idem_api_active_reassign_owner_01', taskId: activeTask.taskId,
+      assigneeAgentId: ownerAgent.agent.agentId, expectedRevision: activeTask.revision
+    }
+    const coordinatorActiveReassignment = await postCommand(baseUrl, {
+      ...activeReassignmentBody, requestId: 'req_ApiActiveAgent001',
+      idempotencyKey: 'idem_api_active_reassign_agent_01'
+    }, ownerAgent.deviceCredential)
+    expect(coordinatorActiveReassignment.status).toBe(403)
+    await expect(coordinatorActiveReassignment.json()).resolves.toMatchObject({
+      error: { code: 'permission_denied' }
+    })
+    const ownerActiveReassignment = await postCommand(baseUrl, activeReassignmentBody, owner.userCredential)
+    expect(ownerActiveReassignment.status).toBe(200)
+    await expect(ownerActiveReassignment.json()).resolves.toMatchObject({ entity: {
+      taskId: activeTask.taskId, assigneeAgentId: ownerAgent.agent.agentId,
+      status: 'offered', attempt: 2, revision: activeTask.revision + 1
+    } })
+    const activeOffers = (repository.state.inboxes.get(`agent:${ownerAgent.agent.agentId}`) ?? [])
+      .filter((message: { messageType: string; payload: { taskId?: string } }) => (
+        message.messageType === 'task.offered' && message.payload.taskId === activeTask.taskId
+      ))
+    expect(activeOffers).toHaveLength(1)
 
     const forgedRevoke = await postCommand(baseUrl, {
       protocolVersion: '1.0', requestId: 'req_ApiRevokeForged01', type: 'credential.revoke_current',

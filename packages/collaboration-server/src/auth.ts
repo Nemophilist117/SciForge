@@ -32,6 +32,10 @@ export type PermissionOperation =
   | 'personal_message'
   | 'project_input'
   | 'task_create'
+  | 'task_retry'
+  | 'task_reassign'
+  | 'task_cancel'
+  | 'coordination_write'
   | 'task_update'
   | 'human_needed'
   | 'human_answer'
@@ -53,6 +57,7 @@ export type PermissionFacts = {
   assigneeAgentId?: string
   requiredAssurance?: Assurance
   remoteApprovalAllowed?: boolean
+  recordKind?: 'observation' | 'proposal' | 'decision' | 'summary' | 'task_result'
 }
 
 const assuranceRank: Record<Assurance, number> = {
@@ -64,7 +69,9 @@ const assuranceRank: Record<Assurance, number> = {
 
 export function authorize(facts: PermissionFacts): void {
   const { actor } = facts
-  if (actor.kind === 'system') return
+  if (actor.kind === 'system') {
+    fail('permission_denied', 'System actors cannot exercise user, endpoint, or Agent permissions.')
+  }
   if (facts.requiredAssurance && assuranceRank[actor.assurance] < assuranceRank[facts.requiredAssurance]) {
     fail('assurance_insufficient', 'The actor endpoint does not meet the required assurance level.')
   }
@@ -81,8 +88,29 @@ export function authorize(facts: PermissionFacts): void {
       }
       return
     case 'task_create':
+      if (actor.kind !== 'user' || facts.projectRole !== 'owner') {
+        fail('permission_denied', 'Only the Project owner may confirm and create a Task assignment.')
+      }
+      return
+    case 'task_retry':
+      if ((actor.kind !== 'agent_device' || actor.agentId !== facts.coordinatorAgentId) &&
+          (actor.kind !== 'user' || facts.projectRole !== 'owner')) {
+        fail('permission_denied', 'Only the Project owner or active Coordinator Agent may retry the current assignee.')
+      }
+      return
+    case 'coordination_write':
       if (actor.kind !== 'agent_device' || actor.agentId !== facts.coordinatorAgentId) {
-        fail('permission_denied', 'Only the active Coordinator Agent may create tasks.')
+        fail('permission_denied', 'Only the active Coordinator Agent may perform this coordination operation.')
+      }
+      return
+    case 'task_reassign':
+      if (actor.kind !== 'user' || facts.projectRole !== 'owner') {
+        fail('permission_denied', 'Only the Project owner may confirm a Task reassignment.')
+      }
+      return
+    case 'task_cancel':
+      if (actor.kind !== 'user' || facts.projectRole !== 'owner') {
+        fail('permission_denied', 'Only the Project owner may confirm Task cancellation.')
       }
       return
     case 'task_update':
@@ -123,6 +151,12 @@ export function authorize(facts: PermissionFacts): void {
       }
       return
     case 'record_accept':
+      if (facts.recordKind !== 'observation' && facts.recordKind !== 'task_result') {
+        if (actor.kind !== 'user' || facts.projectRole !== 'owner') {
+          fail('permission_denied', 'Only the Project owner may accept a proposal, decision, or summary.')
+        }
+        return
+      }
       if (actor.kind === 'agent_device') {
         if (actor.agentId !== facts.coordinatorAgentId) fail('permission_denied', 'Only the Coordinator Agent may accept this record.')
       } else if (actor.kind === 'user') {

@@ -1,5 +1,7 @@
 # 云端协作内核需求
 
+> A 本轮规范边界：本文是 A 服务端的 normative release scope，覆盖云端公共合同、权威账本、路由、权限、幂等、审计与持久化。本地 AgentRuntime、Coordinator/Worker 决策与执行逻辑不在 A 内核中。
+
 ## ADDED Requirements
 
 ### Requirement: 云端拥有统一身份和协作事实
@@ -25,13 +27,19 @@ Collaboration Server SHALL 是 User、Human Endpoint Binding、Agent ownership�
 
 ### Requirement: Project 和 Task 有唯一权威状态
 
-Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revision；Task SHALL 记录唯一 assignee Agent 和 revision。所有写入 SHALL 验证 actor user/agent、所有权、Project role、expected revision 和状态机。
+Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revision；Task SHALL 记录唯一 assignee Agent 和 revision。正式 Task 创建 SHALL 由 Project Owner User 确认并调用，Task 仍 SHALL 记录该 Project 的 Coordinator Agent 作为协调来源。所有写入 SHALL 验证 actor user/agent、所有权、Project role、expected revision 和状态机。
 
-#### Scenario: 非 Coordinator 修改计划
+#### Scenario: Coordinator 不能替 Owner 创建正式 Task
 
-- **WHEN** Worker 或普通成员尝试创建全局 Task、改写正式计划或完成 Project
+- **WHEN** Coordinator Agent、Worker Agent 或普通成员尝试创建正式 Task、取消 Task 或完成 Project
 - **THEN** 云端 SHALL 拒绝并返回 typed permission error
 - **AND** Project revision SHALL 保持不变。
+
+#### Scenario: Owner 确认 Coordinator 的任务建议
+
+- **WHEN** Project Owner User 使用当前 revision 创建正式 Task
+- **THEN** 云端 SHALL 验证 assignee 所有者是 Project 成员并创建 Task offer
+- **AND** Task SHALL 记录 Project 的当前 Coordinator Agent，而不是把建议 Agent 当作人类确认者。
 
 #### Scenario: 非 assignee 提交结果
 
@@ -41,7 +49,7 @@ Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revis
 
 #### Scenario: Agent owner 不是 Project 成员
 
-- **WHEN** Coordinator 尝试把 Task 分配给未授权用户所拥有的 Agent
+- **WHEN** Project Owner 尝试把 Task 分配给未授权用户所拥有的 Agent
 - **THEN** 云端 SHALL 拒绝分配
 - **AND** 除非该 Agent 是 Project 显式授权的机构服务节点。
 
@@ -51,7 +59,7 @@ Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revis
 
 #### Scenario: Worker 离线
 
-- **WHEN** Coordinator 为离线 Worker 创建 Task
+- **WHEN** Project Owner 确认并为离线 Worker 创建 Task
 - **THEN** TaskOffer SHALL 保存在 Agent inbox
 - **AND** Worker 重连后 SHALL 从最后确认 sequence 按序读取。
 
@@ -76,7 +84,8 @@ Project SHALL 记录 member user IDs、唯一 active Coordinator Agent 和 revis
 
 - **WHEN** 当前 assignee 提交 TaskResult 或 observation
 - **THEN** 云端 SHALL 保留作者 user/agent、Task、revision 和时间
-- **AND** Coordinator SHALL 决定是否接受为正式 Project Record。
+- **AND** Coordinator 或 Project Owner MAY 接受 `observation` 或 `task_result` 为正式 Project Record
+- **AND** 只有 Project Owner MAY 接受 `proposal`、`decision` 或 `summary`。
 
 #### Scenario: Project 成员读取共享记录
 
@@ -139,24 +148,66 @@ PoC SHALL 使用一个服务、一个 PostgreSQL 事实库和一个 WebSocket �
 - **AND** Project 成员通过当前 Task revision SHALL 能读取该摘要
 - **AND** 旧 assignee 或旧 revision SHALL NOT 覆盖当前结果。
 
-### Requirement: Coordinator 可显式重试或改派终态失败 Task
+### Requirement: Task 重试与 Owner 主动改派保留人工决定边界
 
-云端 SHALL 暴露单一 `task.retry` 公共命令，由当前 Coordinator Agent 为 `failed` 或 `rejected`
-Task 指定下一次执行的 assignee。相同 assignee 表示重试，不同 assignee 表示改派；操作 SHALL 在同一事务中
-锁定 Project 与 Task、验证 expected revision 和重试预算、清除上一 attempt 的进度与结果，并只向新 assignee
-投递一条 `task.offered`。
+云端 SHALL 暴露单一 `task.retry` 公共命令，但 SHALL 按 assignee 是否变更执行两种权限和状态规则：
 
-#### Scenario: Coordinator 改派失败 Task
+- assignee 不变表示同节点重试；只接受 `failed` 或 `rejected` Task，MAY 由 Project Owner User 或当前 Coordinator Agent 发起。
+- assignee 变更表示主动改派；只接受 `offered`、`accepted`、`running`、`needs_human`、`failed` 或 `rejected` Task，且 SHALL 只允许 Project Owner User 发起。`succeeded` 或 `cancelled` Task SHALL NOT 被改派。
 
-- **WHEN** 当前 Coordinator 对 failed Task 提交新的成员 Agent 和当前 revision
+两种模式均 SHALL 要求 Project 为 active，并在同一事务中锁定 Project 与 Task、验证 expected revision 和重试预算、递增 attempt/revision、清除上一 attempt 的 progress、resultSummary、safeFailureCode 和 completedAt，然后转为 `offered`，并只向新 assignee 投递一条当前 revision 的 `task.offered`。变更 assignee 时，云端 SHALL 同时取消该 Task 的全部 pending HumanRequest，避免旧问题改变新执行授权。
+
+#### Scenario: Coordinator 重试同一 Worker 的失败 Task
+
+- **WHEN** 当前 Coordinator 对 failed Task 提交原 assignee 和当前 revision
+- **THEN** Task SHALL 保持同一 taskId、递增 attempt/revision 并回到 offered
+- **AND** 新 attempt SHALL 只产生一条给原 assignee 的 offer。
+
+#### Scenario: Coordinator 不能自行改派失败 Task
+
+- **WHEN** 当前 Coordinator 对 failed Task 提交不同 assignee
+- **THEN** 云端 SHALL 返回 typed permission error
+- **AND** Task SHALL 保持不变。
+
+#### Scenario: Owner 改派失败 Task
+
+- **WHEN** Project Owner 对 failed Task 提交新的成员 Agent 和当前 revision
 - **THEN** Task SHALL 保持同一 taskId、递增 attempt/revision 并回到 offered
 - **AND** 旧 assignee 后续进度、资源和结果写入 SHALL 被拒绝。
+
+#### Scenario: Owner 主动改派正在执行的 Task
+
+- **WHEN** Project Owner 对 `running` Task 提交不同的成员 Agent 和当前 revision
+- **THEN** Task SHALL 递增 attempt/revision、清空本次执行输出并回到 `offered`
+- **AND** 旧 assignee SHALL 立即失去该 Task 的进度、资源和结果写入权。
+
+#### Scenario: 改派使待回答问题过期
+
+- **WHEN** Owner 对带有 pending HumanRequest 的 `needs_human` Task 改派到不同 Agent
+- **THEN** 该 Task 的所有 pending HumanRequest SHALL 被取消
+- **AND** 之后到达的原回答 SHALL 返回公共 typed error `expired` 且 SHALL NOT 改变当前 Task。
 
 #### Scenario: 两个请求竞争同一改派
 
 - **WHEN** 两个不同幂等请求使用相同 expected revision 竞争重试或改派
 - **THEN** 最多一个请求 SHALL 成功并产生一条新 offer
 - **AND** 失败请求 SHALL 返回包含 current revision 的 typed conflict。
+
+### Requirement: Task 取消只接受 Project Owner 确认
+
+云端 SHALL 只允许 Project Owner User 把非终态 Task 转为 `cancelled`。Coordinator Agent MAY 在自身逻辑中提出取消建议，但 SHALL NOT 直接改变云端 Task 状态。
+
+#### Scenario: Coordinator 尝试直接取消 Task
+
+- **WHEN** 当前 Coordinator Agent 对 Task 提交 `cancelled` transition
+- **THEN** 云端 SHALL 返回 typed permission error
+- **AND** Task revision 和状态 SHALL 保持不变。
+
+#### Scenario: Owner 确认取消 Task
+
+- **WHEN** Project Owner User 对可取消 Task 提交 `cancelled` transition 和当前 revision
+- **THEN** 云端 SHALL 原子更新 Task 状态和 revision
+- **AND** SHALL 写入对应审计与信箱事实。
 
 ### Requirement: ResourceRef 只保存安全资源引用
 

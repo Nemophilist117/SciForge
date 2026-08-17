@@ -141,7 +141,7 @@ describe('canonical pairing and bidirectional Session commands', () => {
     expect(sanitized).not.toContain(['INVALID', 'TEST', 'ONLY'].join('_'))
   })
 
-  it('exposes strict current-credential revocation and Coordinator Task retry commands', () => {
+  it('exposes strict current-credential revocation and actor-neutral Task retry commands', () => {
     const revokeCurrent = {
       protocolVersion: '1.0',
       requestId: TEST_IDS.requestId,
@@ -165,6 +165,8 @@ describe('canonical pairing and bidirectional Session commands', () => {
     expect(restRequestSchema.safeParse({ ...retryTask, assigneeAgentId: undefined }).success).toBe(false)
     expect(restRequestSchema.safeParse({ ...retryTask, expectedRevision: undefined }).success).toBe(false)
     expect(restRequestSchema.safeParse({ ...retryTask, status: 'offered' }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...retryTask, actorUserId: TEST_IDS.userId }).success).toBe(false)
+    expect(restRequestSchema.safeParse({ ...retryTask, actorAgentId: TEST_IDS.agentId }).success).toBe(false)
   })
 
   it('exposes a strict read-only ProjectRecord query', () => {
