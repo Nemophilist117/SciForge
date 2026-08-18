@@ -1,6 +1,6 @@
 # A 云端协同服务职责与开放就绪状态
 
-> 状态日期：2026-08-18（Asia/Shanghai）
+> 状态日期：2026-08-19（Asia/Shanghai）
 >
 > 分工依据：《SciForge 多客户端协作 MVP 五人分工报告》2026-08-16 对齐结论
 >
@@ -52,20 +52,22 @@ A 也不为各板块增加专用状态机、中央枚举分支或第二套消息
 
 ## 📊 当前真实状态
 
-以下是 2026-08-19 对部署和代码的只读核验快照。后续发布必须用新的固定 commit 和发布清单覆盖本表，不能沿用“已验证”字样。
+以下是 2026-08-19 对固定 release `6241dd0132d3378673e454addd3d7927094bba59` 的部署与恢复核验快照。这里的“已验证”只覆盖 A core-only，不扩张为正式身份或产品链路证据。
 
 | 项目 | 当前事实 | 含义 |
 | --- | --- | --- |
-| 新 A ECS | `47.76.230.118`；app 当前仍固定在旧 commit `5898d3d3599b26cebc60f63ed8b17c5faf5133ac` | 新 A 预发布实例存在；本工作树尚未部署 |
+| 新 A ECS | `47.76.230.118`；app 固定在 commit `6241dd0132d3378673e454addd3d7927094bba59` | A core-only 固定 release 已部署；未开放身份驱动业务 |
 | 新 A 网络 | app 仅发布到 `127.0.0.1:8787`；PostgreSQL 不发布；公网仅受限 SSH | 隔离边界正确，但不是产品入口 |
-| 新 A 探针 | `/healthz` 与 `/readyz` 返回 200 | app 与数据库当前可用 |
+| 新 A 探针 | `/healthz` 与 `/readyz` 返回 200；schema v5 / 32 张表及关键约束通过 | app、数据库与固定 schema 当前可用 |
 | 新 A Provider | core-only，Provider catalog 为 `[]`，Provider diagnostics 为 0 | 正式 Human Provider 尚未选定或接入 |
 | 新 A 业务数据 | User、Agent、Project、Task 均为 0 | 尚未完成真实 OIDC 登录、Device/Agent 注册、Zulip binding 与业务闭环 |
-| 数据库重启 | app 容器/PID 未随 PostgreSQL 重启，readiness 可恢复；连接池日志已脱敏验证 | 服务器可靠性门禁已有证据 |
+| 数据库重启 | 停库时 health=200/ready=503；恢复后 app 容器、PID、RestartCount 均未变化；恰有脱敏 57P0x 诊断且敏感日志匹配为 0 | 服务器可靠性门禁已有实机证据 |
+| 真实 PostgreSQL 隔离验收 | PostgreSQL 17.6 上从 v1 升至 v5，并发 OIDC JIT、Device→Agent、legacy revoke 与 Zulip binding 唯一性全部通过；生产库前后内容摘要一致 | 不把 SQL mock 冒充真实数据库证据 |
+| 备份恢复 | 重启后备份 `collaboration-20260818T171903Z.dump` 已在隔离数据库恢复；schema v5、32 张表和逐表行数一致 | 具备本次固定 release 的恢复证据 |
 | 公共 API | 合同、PostgreSQL、HTTP/WSS、Inbox、幂等、审计、能力查询与任务路由已存在 | 可继续做 A 的 conformance，不等于产品 E2E |
 | 自动化驱动 | A-only 合同、HTTP/WSS、事务与离线身份 fixtures 已通过；旧两用户 Zulip harness 不兼容新的 OIDC/Device-first 身份合同，已退出发布门禁 | fixtures 不是成员接入前置，也不冒充真实 Keycloak、D Bot 或最新版 SciForge |
-| 网页控制台 | 当前固定部署未包含；本分支正在补齐 A-only 同源控制台 | 需随新的固定版本部署和验证，不是永久延期项 |
-| 真人确认门禁 | 当前固定版本尚未对首次分派、改派、取消和最终结论形成完整统一门禁 | 未满足最新共同原则 |
+| 网页控制台 | `/console/` 已随固定 release 同源部署 | 仅用于 A 低层控制面调试，不代表身份已开放 |
+| 真人确认门禁 | Owner 直接动作与 Coordinator 绑定不可变 confirmation 的委托动作已由服务端强制 | 公共治理合同已具备；真实 Human/Provider 链路尚未接入 |
 | 正式入口 / Human Provider | 尚未选定，不把 legacy URL、Zulip 方向或其他 Provider 路线写成冻结合同 | 不能声称正式身份接入已经开放 |
 | 本分支统一身份 | 动态 OIDC/JWKS、RS256、Ed25519 与 binding fixtures 可做离线验证 | fixtures 不是 Keycloak、Desktop、D Bot 或 Zulip E2E |
 | 真实产品 E2E | 尚无“已选 Human 入口 → 新 A → 本地最新版 SciForge → 新 A → 已选 Human 入口”的完整证据 | 身份驱动业务测试尚未开放 |
@@ -76,17 +78,17 @@ A 也不为各板块增加专用状态机、中央枚举分支或第二套消息
 
 这一层不依赖真实 Keycloak、Desktop、D Bot、Zulip 或正式域名，可以现在完成并提供给 B/C 做离线合同适配；动态 fixtures 只提供离线证据，不提供真实 User Access Token，也不允许宣称 Agent 注册或 Project/Task 云端闭环成功：
 
-- [ ] 从同一固定 commit 生成协议 `1.0` 的 command、response、Inbox、entity、error JSON Schema。
-- [ ] 发布状态/actor 表和正常、重复、乱序、revision、idempotency、旧 execution、确认失效 fixtures；manifest 中记录每个文件的 SHA-256。
-- [ ] `npm run collaboration:contracts:check` 与生成物测试通过，固定发布时把完整 commit 注入 manifest。
-- [ ] core-only 的 Tunnel、`healthz`、`readyz`、空 catalog、未配置 OIDC 时 User API fail-closed、无 confirm adapter 时 confirm fail-closed、数据库重启、备份恢复和敏感日志扫描通过。
-- [ ] 明确标记真实 OIDC→Device→Agent、User↔Zulip binding、Project/Task 业务闭环和产品 E2E 为“未证明”。
+- [x] 从同一固定 commit 生成协议 `1.0` 的 command、response、Inbox、entity、error JSON Schema。
+- [x] 发布状态/actor 表和正常、重复、乱序、revision、idempotency、旧 execution、确认失效 fixtures；manifest 中记录每个文件的 SHA-256。
+- [x] `npm run collaboration:contracts:check` 与生成物测试通过，固定发布时把完整 commit 注入 manifest。
+- [x] core-only 的 Tunnel、`healthz`、`readyz`、空 catalog、未配置 OIDC 时 User API fail-closed、无 confirm adapter 时 confirm fail-closed、数据库重启、备份恢复和敏感日志扫描通过。
+- [x] 明确标记真实 OIDC→Device→Agent、User↔Zulip binding、Project/Task 业务闭环和产品 E2E 为“未证明”。
 
 ### 第二层：身份驱动业务测试
 
 只有以下事项同时通过，A 才通知 B–E 使用真实身份调用云端业务接口：
 
-- [ ] 为新 A 发布新的固定 commit、release manifest 和可回退备份，工作树与发布物一致。
+- [x] 为新 A 发布新的固定 commit、release manifest 和可回退备份，工作树与发布物一致。
 - [ ] 正式入口和 Human Provider 方案已书面选定；对应 TLS、HTTP、WSS、base path、身份验证和回退方式一致。
 - [ ] 测试/生产唯一 OIDC issuer、Discovery/JWKS、`acr/amr/auth_time` Mapper 和专用测试账号均已配置；A 逐字符校验 issuer，并固定 audience 与 Desktop/Web `azp` allowlist。
 - [ ] D→A confirm service-auth 已冻结并注入；普通 User Token、匿名请求和未验证 Zulip payload 都不能调用 confirm。

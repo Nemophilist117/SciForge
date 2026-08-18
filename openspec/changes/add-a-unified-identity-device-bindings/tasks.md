@@ -25,7 +25,7 @@
 - [x] 4.1 Extend stored models and repository interfaces/Fake with OIDC identities, Device enrollments, Devices, Zulip binding requests/history, Device-linked Agents, and required locking/listing operations.
 - [x] 4.2 Add `0005_unified_identity_device_bindings.sql` with tables, foreign keys, status/check constraints, active partial unique indexes, single-consumption invariants, and safe legacy Agent revocation without fabricating Devices.
 - [x] 4.3 Implement PostgreSQL CRUD/transaction behavior and precise allowlisted constraint/error mapping for all new identity records and Agent linkage.
-- [ ] 4.4 Advance migration/readiness validation to schema version 5 and verify exact tables, columns, indexes, constraints, foreign keys, rollback, and Fake/PostgreSQL parity.
+- [x] 4.4 Advance migration/readiness validation to schema version 5 and verify exact tables, columns, indexes, constraints, foreign keys, rollback, and Fake/PostgreSQL parity.
 
 ## 5. Device enrollment and lifecycle
 
@@ -62,8 +62,8 @@
 ## 9. Verification and release
 
 - [x] 9.1 Run fixture self-tests, contract artifact checks, contract/Service/HTTP/Provider boundary tests, typecheck, changed-file lint/secret audit, and the full existing collaboration regression suite.
-- [ ] 9.2 Run real PostgreSQL migration, constraint, concurrent JIT/binding/enrollment, restart, and backup/restore verification; record exact results separately from SQL-mock tests.
+- [x] 9.2 Run real PostgreSQL migration, constraint, concurrent JIT/binding/enrollment, restart, and backup/restore verification; record exact results separately from SQL-mock tests.
 - [x] 9.3 Review the combined diff against the protected dirty baseline, confirm unrelated A-MVP work remains present, and audit for legacy anonymous/User-opaque/pairing bypasses and duplicate identity state machines.
-- [ ] 9.4 Create a fixed commit and reproducible A release bundle with exact manifest/digests and no credentials, parent-workspace-only fixtures, source tree, or development environment files.
-- [ ] 9.5 Back up A ECS, deploy migration 5 and the fixed bundle, then verify health, readiness, schema, fail-closed confirm, OIDC dependency behavior, core contract, restart, and recovery gates.
+- [x] 9.4 Create a fixed commit and reproducible A release bundle with exact manifest/digests and no credentials, parent-workspace-only fixtures, source tree, or development environment files.
+- [x] 9.5 Back up A ECS, deploy migration 5 and the fixed bundle, then verify health, readiness, schema, fail-closed confirm, OIDC dependency behavior, core contract, restart, and recovery gates.
 - [x] 9.6 Report real Keycloak/Desktop/D-Zulip E2E as not run until those external environments and service authentication are available; never promote offline fixtures to real E2E evidence.
