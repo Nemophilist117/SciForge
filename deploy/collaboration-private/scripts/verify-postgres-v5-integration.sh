@@ -73,7 +73,7 @@ running_image_revision="$(docker container inspect --format \
 
 mapfile -t postgres_networks < <(docker container inspect --format \
   '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
-  "$postgres_container_id")
+  "$postgres_container_id" | awk 'NF { print }')
 (( ${#postgres_networks[@]} == 1 )) \
   || die "PostgreSQL must be attached to exactly one dedicated database network."
 database_network="${postgres_networks[0]}"

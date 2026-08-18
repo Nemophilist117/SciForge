@@ -82,6 +82,7 @@ assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'approved_image_
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'running_image_revision" =~ ^[0-9a-f]{40}$'
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'app_state_before" == "$app_state_before_build'
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" "'{{.Internal}}'"
+assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" "awk 'NF { print }'"
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'docker port "$postgres_container_id"'
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'chmod 0440 "$password_file"'
 assert_contains "$SCRIPT_DIR/verify-postgres-v5-integration.sh" 'root:10001 mode 0440'
