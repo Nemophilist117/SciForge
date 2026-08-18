@@ -120,10 +120,10 @@ else
   [[ "$provider_env_key_count" == 0 ]] \
     || die "Core-only app Config.Env must not contain Provider configuration keys, including empty values."
   provider_mount_violation_count="$(docker container inspect --format \
-    '{{range .Mounts}}{{println .Destination}}{{end}}' "$app_container_before" \
+      '{{range .Mounts}}{{println .Destination}}{{end}}' "$app_container_before" \
     | awk '
         BEGIN { target = "/run/sciforge-provider" }
-        $0 == "/" || $0 == target || index($0, target "/") == 1 || index(target, $0 "/") == 1 {
+        NF && ($0 == "/" || $0 == target || index($0, target "/") == 1 || index(target, $0 "/") == 1) {
           count += 1
         }
         END { print count + 0 }

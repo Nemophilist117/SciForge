@@ -51,6 +51,7 @@ assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" 'body.providers.length 
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" '{{range .Config.Env}}{{println .}}{{end}}'
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" 'provider_env_key_count'
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" '{{range .Mounts}}{{println .Destination}}{{end}}'
+assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" 'NF && ($0 == "/" || $0 == target'
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" 'provider_mount_violation_count'
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" 'index(target, $0 "/") == 1'
 assert_contains "$SCRIPT_DIR/verify-postgres-restart.sh" '[[ "$provider_mode" == zulip-provider-private ]]'
