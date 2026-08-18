@@ -52,18 +52,18 @@ A 也不为各板块增加专用状态机、中央枚举分支或第二套消息
 
 ## 📊 当前真实状态
 
-以下是 2026-08-19 对固定 release `6241dd0132d3378673e454addd3d7927094bba59` 的部署与恢复核验快照。这里的“已验证”只覆盖 A core-only，不扩张为正式身份或产品链路证据。
+以下是 2026-08-19 对固定 release `91d1b0be2cb53e45207107b72d3b00aff42e123e` 的部署与恢复核验快照。这里的“已验证”只覆盖 A core-only，不扩张为正式身份或产品链路证据。
 
 | 项目 | 当前事实 | 含义 |
 | --- | --- | --- |
-| 新 A ECS | `47.76.230.118`；app 固定在 commit `6241dd0132d3378673e454addd3d7927094bba59` | A core-only 固定 release 已部署；未开放身份驱动业务 |
+| 新 A ECS | `47.76.230.118`；app 固定在 commit `91d1b0be2cb53e45207107b72d3b00aff42e123e` | A core-only 固定 release 已部署；未开放身份驱动业务 |
 | 新 A 网络 | app 仅发布到 `127.0.0.1:8787`；PostgreSQL 不发布；公网仅受限 SSH | 隔离边界正确，但不是产品入口 |
 | 新 A 探针 | `/healthz` 与 `/readyz` 返回 200；schema v5 / 32 张表及关键约束通过 | app、数据库与固定 schema 当前可用 |
 | 新 A Provider | core-only，Provider catalog 为 `[]`，Provider diagnostics 为 0 | 正式 Human Provider 尚未选定或接入 |
 | 新 A 业务数据 | User、Agent、Project、Task 均为 0 | 尚未完成真实 OIDC 登录、Device/Agent 注册、Zulip binding 与业务闭环 |
 | 数据库重启 | 停库时 health=200/ready=503；恢复后 app 容器、PID、RestartCount 均未变化；恰有脱敏 57P0x 诊断且敏感日志匹配为 0 | 服务器可靠性门禁已有实机证据 |
 | 真实 PostgreSQL 隔离验收 | PostgreSQL 17.6 上从 v1 升至 v5，并发 OIDC JIT、Device→Agent、legacy revoke 与 Zulip binding 唯一性全部通过；生产库前后内容摘要一致 | 不把 SQL mock 冒充真实数据库证据 |
-| 备份恢复 | 重启后备份 `collaboration-20260818T171903Z.dump` 已在隔离数据库恢复；schema v5、32 张表和逐表行数一致 | 具备本次固定 release 的恢复证据 |
+| 备份恢复 | 重启后备份 `collaboration-20260818T173923Z.dump` 已在隔离数据库恢复；schema v5、32 张表和逐表行数一致 | 具备本次固定 release 的恢复证据 |
 | 公共 API | 合同、PostgreSQL、HTTP/WSS、Inbox、幂等、审计、能力查询与任务路由已存在 | 可继续做 A 的 conformance，不等于产品 E2E |
 | 自动化驱动 | A-only 合同、HTTP/WSS、事务与离线身份 fixtures 已通过；旧两用户 Zulip harness 不兼容新的 OIDC/Device-first 身份合同，已退出发布门禁 | fixtures 不是成员接入前置，也不冒充真实 Keycloak、D Bot 或最新版 SciForge |
 | 网页控制台 | `/console/` 已随固定 release 同源部署 | 仅用于 A 低层控制面调试，不代表身份已开放 |
