@@ -571,11 +571,14 @@ database_table_row_counts() {
   local database_user="$2"
   local table
   local count
+  local tables=()
 
   [[ "$database" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "Unsafe database name in row-count verification."
   [[ "$database_user" == sciforge_admin || "$database_user" == sciforge_collab ]] \
     || die "Unexpected database user in row-count verification."
-  while IFS= read -r table; do
+  mapfile -t tables < <(expected_collaboration_tables)
+  (( ${#tables[@]} > 0 )) || die "Release-derived table truth is empty."
+  for table in "${tables[@]}"; do
     [[ "$table" =~ ^[a-z][a-z0-9_]*$ ]] || die "Unsafe table name in row-count verification."
     if ! count="$("${COMPOSE[@]}" exec -T postgres \
       psql -U "$database_user" -d "$database" --tuples-only --no-align \
@@ -584,5 +587,5 @@ database_table_row_counts() {
     fi
     [[ "$count" =~ ^[0-9]+$ ]] || die "Database returned an invalid table row count."
     printf '%s=%s\n' "$table" "$count"
-  done < <(expected_collaboration_tables)
+  done
 }

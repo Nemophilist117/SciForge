@@ -112,6 +112,8 @@ assert_contains "$SCRIPT_DIR/common.sh" 'mv -- "$attestation_path" "$claimed_pat
 assert_contains "$SCRIPT_DIR/common.sh" 'candidateImageId=$candidate_image_id'
 assert_contains "$SCRIPT_DIR/common.sh" 'runner_script_digest'
 assert_contains "$SCRIPT_DIR/common.sh" 'now_epoch - verified_epoch <= 1800'
+assert_contains "$SCRIPT_DIR/common.sh" 'mapfile -t tables < <(expected_collaboration_tables)'
+assert_contains "$SCRIPT_DIR/common.sh" 'for table in "${tables[@]}"'
 
 assert_contains "$SCRIPT_DIR/postgres-v5-integration.mjs" '/app/node_modules/@sciforge/collaboration-server/dist/index.js'
 assert_contains "$SCRIPT_DIR/postgres-v5-integration.mjs" 'CREATE DATABASE ${quotedDatabaseIdentifier(databaseName)}'
