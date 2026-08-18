@@ -162,7 +162,7 @@ describe('projection, Project, Task, and Record invariants', () => {
     expect(taskSchema.safeParse({ ...taskFixture, attempt: 4, maxRetries: 2 }).success).toBe(false)
     expect(taskSchema.safeParse({ ...taskFixture, status: 'succeeded' }).success).toBe(false)
     expect(taskSchema.safeParse({ ...taskFixture, status: 'succeeded', completedAt: TEST_LATER_TIMESTAMP,
-      resultSummary: '有界结果摘要' }).success).toBe(true)
+      resultSummary: '有界结果摘要', resultProjectRecordId: TEST_IDS.projectRecordId }).success).toBe(true)
     expect(taskSchema.safeParse({ ...taskFixture, status: 'running', progress: {
       percent: 40, summary: '已完成输入校验', reportedAt: TEST_LATER_TIMESTAMP
     } }).success).toBe(true)
@@ -170,6 +170,11 @@ describe('projection, Project, Task, and Record invariants', () => {
     expect(taskSchema.safeParse({ ...taskFixture, status: 'failed', completedAt: TEST_LATER_TIMESTAMP }).success).toBe(false)
     expect(taskSchema.safeParse({ ...taskFixture, status: 'failed', completedAt: TEST_LATER_TIMESTAMP,
       safeFailureCode: 'input_invalid' }).success).toBe(true)
+    expect(taskSchema.safeParse({ ...taskFixture, status: 'failed', completedAt: TEST_LATER_TIMESTAMP,
+      safeFailureCode: 'input_invalid', safeFailureSummary: 'Input validation rejected the bounded request.' }).success).toBe(true)
+    expect(taskSchema.safeParse({ ...taskFixture, status: 'running', safeFailureSummary: 'Failure text before failure.' }).success).toBe(false)
+    expect(taskSchema.safeParse({ ...taskFixture, status: 'failed', completedAt: TEST_LATER_TIMESTAMP,
+      safeFailureSummary: 'A summary cannot replace the stable failure code.' }).success).toBe(false)
   })
 
   it('keeps the Project capability directory minimal and strict', () => {
@@ -207,6 +212,7 @@ describe('projection, Project, Task, and Record invariants', () => {
     expect(resourceRefSchema.safeParse({
       ...taskResource,
       taskId: null,
+      executionId: null,
       taskRevision: null,
       createdByUserId: TEST_IDS.userId,
       createdByAgentId: null

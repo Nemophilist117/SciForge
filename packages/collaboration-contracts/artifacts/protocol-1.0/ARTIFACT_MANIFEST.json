@@ -1,0 +1,105 @@
+{
+  "acceptance": {
+    "businessEndToEnd": {
+      "status": "not-open"
+    },
+    "coreOnly": {
+      "doesNotProve": [
+        "pairing",
+        "agent-registration",
+        "project-task-business-loop",
+        "formal-product-end-to-end"
+      ],
+      "proves": [
+        "schema-generation",
+        "fixture-validation",
+        "loopback-transport",
+        "healthz",
+        "readyz",
+        "provider-catalog-boundary",
+        "anonymous-error-boundary"
+      ],
+      "status": "available"
+    },
+    "formalProductTransport": {
+      "status": "not-selected"
+    },
+    "identityProvider": {
+      "status": "not-selected"
+    }
+  },
+  "artifactVersion": 1,
+  "commitInjectionPlaceholder": "__SCIFORGE_COLLABORATION_COMMIT__",
+  "contractCommit": "__SCIFORGE_COLLABORATION_COMMIT__",
+  "contractVersion": "1.0",
+  "files": [
+    {
+      "bytes": 1386,
+      "path": "fixtures/duplicate-idempotent-replay.json",
+      "sha256": "79e4bf9b7ba0b47f895619e5268d6e0d85bdc3f2c25ff3d1d9711e681988e1ec"
+    },
+    {
+      "bytes": 1885,
+      "path": "fixtures/idempotency-conflict.json",
+      "sha256": "3c4f9e68a2295c8571b5cdd28097fa71b4d60808076e144f625e76fc15df7d1f"
+    },
+    {
+      "bytes": 3346,
+      "path": "fixtures/normal-task-offer.json",
+      "sha256": "9d7f06179b5c99c3d5569c5ce9d0f50322ce030e3c2a26d31e1d10353e6533b2"
+    },
+    {
+      "bytes": 4336,
+      "path": "fixtures/out-of-order-inbox-completion.json",
+      "sha256": "df125175ce009d41dad4cca2aac8775e745327783d1584e6649760f7cdb136d8"
+    },
+    {
+      "bytes": 1446,
+      "path": "fixtures/revision-conflict.json",
+      "sha256": "c10a180081d52a6758a76059a7ebe51bac02d82d8fd2594aea00a102592595d7"
+    },
+    {
+      "bytes": 1696,
+      "path": "fixtures/stale-execution-write.json",
+      "sha256": "91f9653353b747b5c3419d95d9b6d9e69708a1a283d27f713343c3258bdd45ff"
+    },
+    {
+      "bytes": 1699,
+      "path": "fixtures/superseded-confirmation.json",
+      "sha256": "d2920fd91f71f5aa37a08427de38b8fff8da43b32a0be0cfb621da1aa7a167ee"
+    },
+    {
+      "bytes": 89656,
+      "path": "schemas/commands.schema.json",
+      "sha256": "72be98ef65e43c85057f09549acb919678ce82fdf0397b2057fadabdde07c148"
+    },
+    {
+      "bytes": 156801,
+      "path": "schemas/entities.schema.json",
+      "sha256": "e0931f70ddde23e8450b1e15ca032cb8a556208220b2d85733ee23b354aa2569"
+    },
+    {
+      "bytes": 3950,
+      "path": "schemas/errors.schema.json",
+      "sha256": "8a72f50bd30b6d974482249b67758beaa101bfde52a30787a23eb2d29430e23a"
+    },
+    {
+      "bytes": 48048,
+      "path": "schemas/inbox.schema.json",
+      "sha256": "9d699821afa35d96a8e15dd3f3fd0750ad1a037477b862ab41ff1bc135b0fbd9"
+    },
+    {
+      "bytes": 522926,
+      "path": "schemas/responses.schema.json",
+      "sha256": "bc4de12fef06c83237ed0c4ca82a21fed0d6c60eb6f6bebde2c9490cafdc1797"
+    },
+    {
+      "bytes": 19986,
+      "path": "state-and-actors.json",
+      "sha256": "665a7b07d0f746d90ea889556aa2dfe33a7c711f60d3c0792c892dd63899d03a"
+    }
+  ],
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "protocolVersion": "1.0",
+  "source": "packages/collaboration-contracts/src strict Zod exports"
+}

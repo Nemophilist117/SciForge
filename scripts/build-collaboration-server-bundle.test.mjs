@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { gzipSync } from 'node:zlib'
 
 import {
   buildCollaborationServerBundle,
   COLLABORATION_RELEASE_PACKAGES,
   assertFullCommit,
   parseArguments,
+  readNpmPackageArchiveFiles,
+  validateContractArtifactFiles,
   validatePackManifest
 } from './build-collaboration-server-bundle.mjs'
 
@@ -20,7 +23,13 @@ const sourceRepositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function validFilesFor(packageName) {
   if (packageName === '@sciforge/collaboration-contracts') {
-    return ['package.json', 'dist/index.js', 'dist/index.d.ts']
+    return [
+      'package.json',
+      'dist/index.js',
+      'dist/index.d.ts',
+      'artifacts/protocol-1.0/ARTIFACT_MANIFEST.json',
+      'artifacts/protocol-1.0/state-and-actors.json'
+    ]
   }
   if (packageName === '@sciforge/collaboration-provider-zulip') {
     return [
@@ -44,6 +53,90 @@ function validFilesFor(packageName) {
   ]
 }
 
+function stringifyJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`
+}
+
+function createContractArtifactFiles(commit) {
+  const state = stringifyJson({
+    artifactVersion: 1,
+    protocolVersion: '1.0',
+    contractCommit: commit,
+    actors: {},
+    permissions: [],
+    stateTransitions: {}
+  })
+  const files = [{
+    path: 'state-and-actors.json',
+    sha256: createHash('sha256').update(state).digest('hex'),
+    bytes: Buffer.byteLength(state)
+  }]
+  return new Map([
+    ['state-and-actors.json', state],
+    ['ARTIFACT_MANIFEST.json', stringifyJson({
+      artifactVersion: 1,
+      contractVersion: '1.0',
+      protocolVersion: '1.0',
+      contractCommit: commit,
+      commitInjectionPlaceholder: '__SCIFORGE_COLLABORATION_COMMIT__',
+      files
+    })]
+  ])
+}
+
+const testBundleDependencies = Object.freeze({
+  generateContractArtifactFiles: createContractArtifactFiles
+})
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = `${value.toString(8).padStart(length - 1, '0')}\0`
+  header.write(encoded, offset, length, 'ascii')
+}
+
+function createTarHeader(path, size) {
+  if (Buffer.byteLength(path) > 100) throw new Error(`Test tar path is too long: ${path}`)
+  const header = Buffer.alloc(512)
+  header.write(path, 0, 100, 'utf8')
+  writeTarOctal(header, 100, 8, 0o644)
+  writeTarOctal(header, 108, 8, 0)
+  writeTarOctal(header, 116, 8, 0)
+  writeTarOctal(header, 124, 12, size)
+  writeTarOctal(header, 136, 12, 0)
+  header.fill(32, 148, 156)
+  header[156] = '0'.charCodeAt(0)
+  header.write('ustar\0', 257, 6, 'ascii')
+  header.write('00', 263, 2, 'ascii')
+  const checksum = header.reduce((sum, byte) => sum + byte, 0)
+  header.write(checksum.toString(8).padStart(6, '0'), 148, 6, 'ascii')
+  header[154] = 0
+  header[155] = 32
+  return header
+}
+
+async function writeNpmArchive(path, entries) {
+  const parts = []
+  for (const [relativePath, value] of entries) {
+    const content = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    parts.push(createTarHeader(`package/${relativePath}`, content.byteLength), content)
+    const padding = (512 - (content.byteLength % 512)) % 512
+    if (padding > 0) parts.push(Buffer.alloc(padding))
+  }
+  parts.push(Buffer.alloc(1024))
+  await writeFile(path, gzipSync(Buffer.concat(parts)))
+}
+
+async function readOrCreatePackFile(packageDirectory, relativePath, packageName) {
+  try {
+    return await readFile(join(packageDirectory, relativePath))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    if (relativePath === 'package.json') {
+      return Buffer.from(stringifyJson({ name: packageName, version: '0.1.0' }))
+    }
+    return Buffer.from(`fixture:${packageName}:${relativePath}`)
+  }
+}
+
 async function createRepository() {
   const root = await mkdtemp(join(tmpdir(), 'sciforge-collaboration-bundle-test-'))
   for (const specification of COLLABORATION_RELEASE_PACKAGES) {
@@ -53,6 +146,16 @@ async function createRepository() {
       name: specification.name,
       version: '0.1.0'
     })}\n`)
+    if (specification.name === '@sciforge/collaboration-contracts') {
+      await mkdir(join(directory, 'dist'), { recursive: true })
+      await writeFile(join(directory, 'dist', 'index.js'), 'export {}\n')
+      await writeFile(join(directory, 'dist', 'index.d.ts'), 'export {}\n')
+      await mkdir(join(directory, 'artifacts', 'protocol-1.0'), { recursive: true })
+      await writeFile(
+        join(directory, 'artifacts', 'protocol-1.0', 'ARTIFACT_MANIFEST.json'),
+        stringifyJson({ contractCommit: '__SCIFORGE_COLLABORATION_COMMIT__' })
+      )
+    }
   }
   return root
 }
@@ -62,7 +165,8 @@ function createCommandHarness({
   failPacking,
   headCommit = approvedCommit,
   isAncestor = () => true,
-  originGuiCommit = approvedCommit
+  originGuiCommit = approvedCommit,
+  tamperContractArchive
 } = {}) {
   const calls = []
   const runCommand = async ({ command, args, cwd }) => {
@@ -87,21 +191,58 @@ function createCommandHarness({
     }
 
     if (basename(command).startsWith('npm') && args.includes('run')) {
+      const packageName = args[args.indexOf('--workspace') + 1]
+      if (packageName === '@sciforge/collaboration-contracts') {
+        const directory = join(cwd, 'packages/collaboration-contracts/dist')
+        await mkdir(directory, { recursive: true })
+        await writeFile(join(directory, 'index.js'), 'export {}\n')
+        await writeFile(join(directory, 'index.d.ts'), 'export {}\n')
+      }
       return { stdout: '', stderr: '' }
     }
     if (basename(command).startsWith('npm') && args[0] === 'pack') {
-      const packageName = args[args.indexOf('--workspace') + 1]
+      const workspaceIndex = args.indexOf('--workspace')
+      let packageDirectory
+      let packageName
+      if (workspaceIndex === -1) {
+        packageDirectory = args[1]
+        packageName = JSON.parse(await readFile(join(packageDirectory, 'package.json'), 'utf8')).name
+      } else {
+        packageName = args[workspaceIndex + 1]
+        packageDirectory = join(cwd, COLLABORATION_RELEASE_PACKAGES.find(
+          (specification) => specification.name === packageName
+        ).directory)
+      }
       if (failPacking === packageName) throw new Error('simulated pack failure')
       const destination = args[args.indexOf('--pack-destination') + 1]
       const filename = `${packageName.replace('@sciforge/', 'sciforge-')}-0.1.0.tgz`
-      await writeFile(join(destination, filename), `archive:${packageName}`)
+      const relativePaths = validFilesFor(packageName)
+      const archiveEntries = new Map()
+      for (const relativePath of relativePaths) {
+        archiveEntries.set(
+          relativePath,
+          await readOrCreatePackFile(packageDirectory, relativePath, packageName)
+        )
+      }
+      if (packageName === '@sciforge/collaboration-contracts') {
+        if (tamperContractArchive === 'commit') {
+          const manifestPath = 'artifacts/protocol-1.0/ARTIFACT_MANIFEST.json'
+          const manifest = JSON.parse(archiveEntries.get(manifestPath).toString('utf8'))
+          manifest.contractCommit = privateTestCommit
+          archiveEntries.set(manifestPath, Buffer.from(stringifyJson(manifest)))
+        } else if (tamperContractArchive === 'hash') {
+          const statePath = 'artifacts/protocol-1.0/state-and-actors.json'
+          archiveEntries.set(statePath, Buffer.concat([archiveEntries.get(statePath), Buffer.from(' ')]))
+        }
+      }
+      await writeNpmArchive(join(destination, filename), archiveEntries)
       return {
         stderr: '',
         stdout: JSON.stringify([{
           name: packageName,
           version: '0.1.0',
           filename,
-          files: validFilesFor(packageName).map((path) => ({ path }))
+          files: relativePaths.map((path) => ({ path }))
         }])
       }
     }
@@ -295,6 +436,7 @@ test('builder emits only immutable release files and pins all official packages'
   const harness = createCommandHarness()
   try {
     const result = await buildCollaborationServerBundle({
+      ...testBundleDependencies,
       commit: approvedCommit,
       outputDirectory,
       repositoryRoot,
@@ -333,6 +475,25 @@ test('builder emits only immutable release files and pins all official packages'
       assert.equal(packageEntry.sha256, createHash('sha256').update(archive).digest('hex'))
     }
 
+    const contractsArchive = join(outputDirectory, 'sciforge-collaboration-contracts-0.1.0.tgz')
+    const packedContractFiles = await readNpmPackageArchiveFiles(contractsArchive)
+    const packedArtifactFiles = new Map([...packedContractFiles]
+      .filter(([path]) => path.startsWith('artifacts/protocol-1.0/'))
+      .map(([path, content]) => [path.slice('artifacts/protocol-1.0/'.length), content]))
+    const packedArtifacts = validateContractArtifactFiles(packedArtifactFiles, approvedCommit)
+    assert.equal(packedArtifacts.manifest.contractCommit, manifest.contractCommit)
+    assert.equal(
+      JSON.parse(packedArtifactFiles.get('state-and-actors.json')).contractCommit,
+      approvedCommit
+    )
+    assert.equal(
+      JSON.parse(await readFile(join(
+        repositoryRoot,
+        'packages/collaboration-contracts/artifacts/protocol-1.0/ARTIFACT_MANIFEST.json'
+      ), 'utf8')).contractCommit,
+      '__SCIFORGE_COLLABORATION_COMMIT__'
+    )
+
     const checksumLines = (await readFile(join(outputDirectory, 'SHA256SUMS'), 'utf8')).trim().split('\n')
     assert.equal(checksumLines.length, 7)
     assert.equal(harness.calls.filter(({ args }) => (
@@ -340,6 +501,11 @@ test('builder emits only immutable release files and pins all official packages'
     )).length, 1)
     assert.equal(harness.calls.filter(({ args }) => args.includes('run') && args.includes('build')).length, 3)
     assert.equal(harness.calls.filter(({ args }) => args[0] === 'pack').length, 3)
+    const contractsPackCall = harness.calls.find(({ args }) => (
+      args[0] === 'pack' && !args.includes('--workspace')
+    ))
+    assert.ok(contractsPackCall)
+    assert.match(contractsPackCall.args[1], /\.collaboration-contracts-package$/u)
     assert.deepEqual(harness.calls.find(({ args }) => args[0] === 'merge-base')?.args, [
       'merge-base', '--is-ancestor', approvedCommit, 'origin/gui'
     ])
@@ -348,6 +514,32 @@ test('builder emits only immutable release files and pins all official packages'
     assert.equal(installCalls[0].args.filter((argument) => argument === 'install').length, 1)
   } finally {
     await rm(repositoryRoot, { recursive: true, force: true })
+  }
+})
+
+test('builder fails closed when the packed contract provenance or artifact hash is changed', async () => {
+  for (const [tamperContractArchive, expectedError] of [
+    ['commit', /manifest commit does not match the release commit/u],
+    ['hash', /SHA-256 mismatch/u]
+  ]) {
+    const repositoryRoot = await createRepository()
+    const outputDirectory = join(repositoryRoot, `tampered-${tamperContractArchive}`)
+    try {
+      await assert.rejects(buildCollaborationServerBundle({
+        ...testBundleDependencies,
+        commit: approvedCommit,
+        outputDirectory,
+        repositoryRoot,
+        runCommand: createCommandHarness({ tamperContractArchive }).runCommand
+      }), expectedError)
+      const leftovers = (await readdir(repositoryRoot)).filter((entry) => (
+        entry.startsWith('.collaboration-bundle-tmp-')
+      ))
+      assert.deepEqual(leftovers, [])
+      await assert.rejects(readFile(join(outputDirectory, 'RELEASE_MANIFEST.json')), /ENOENT/u)
+    } finally {
+      await rm(repositoryRoot, { recursive: true, force: true })
+    }
   }
 })
 
@@ -364,6 +556,7 @@ test('private test release is explicit, records its base, and checks ancestry in
   })
   try {
     const result = await buildCollaborationServerBundle({
+      ...testBundleDependencies,
       commit: privateTestCommit,
       log: (message) => messages.push(message),
       outputDirectory,
@@ -405,6 +598,7 @@ test('team private acceptance is explicit and records commit, base, mode, and tu
   })
   try {
     const result = await buildCollaborationServerBundle({
+      ...testBundleDependencies,
       commit: privateTestCommit,
       log: (message) => messages.push(message),
       outputDirectory,
@@ -526,6 +720,7 @@ test('builder refuses dirty or non-empty targets and cleans failed staging direc
 
     const failedOutput = join(repositoryRoot, 'failed-release')
     await assert.rejects(buildCollaborationServerBundle({
+      ...testBundleDependencies,
       outputDirectory: failedOutput,
       repositoryRoot,
       runCommand: createCommandHarness({

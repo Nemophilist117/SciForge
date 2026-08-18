@@ -22,7 +22,7 @@ export const compatibleProtocolVersionSchema = versionStringSchema.refine(
   { message: `Protocol version must be compatible with ${CURRENT_PROTOCOL_VERSION}` }
 )
 
-const opaqueSuffix = '[A-Za-z0-9]{12,64}'
+const opaqueSuffix = '[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])'
 
 function opaqueId(prefix: string): z.ZodString {
   return z.string().regex(new RegExp(`^${prefix}_${opaqueSuffix}$`, 'u'))
@@ -37,14 +37,18 @@ export const projectInputIdSchema = opaqueId('pin')
 export const projectIdSchema = opaqueId('prj')
 export const projectEndpointBindingIdSchema = opaqueId('peb')
 export const taskIdSchema = opaqueId('tsk')
+export const executionIdSchema = opaqueId('exe')
+export const criterionIdSchema = opaqueId('cri')
 export const projectRecordIdSchema = opaqueId('rec')
 export const resourceRefIdSchema = opaqueId('rrf')
 export const inboxMessageIdSchema = opaqueId('ibx')
 export const receiptIdSchema = opaqueId('rcp')
 export const humanRequestIdSchema = opaqueId('hrq')
 export const humanAnswerIdSchema = opaqueId('han')
+export const confirmationIdSchema = opaqueId('cnf')
 export const challengeIdSchema = opaqueId('chl')
 export const requestIdSchema = opaqueId('req')
+export const traceIdSchema = opaqueId('trc')
 export const localItemIdSchema = opaqueId('lit')
 export const turnIdSchema = opaqueId('trn')
 export const installationIdSchema = opaqueId('ins')
@@ -58,14 +62,18 @@ export type ProjectInputId = z.infer<typeof projectInputIdSchema>
 export type ProjectId = z.infer<typeof projectIdSchema>
 export type ProjectEndpointBindingId = z.infer<typeof projectEndpointBindingIdSchema>
 export type TaskId = z.infer<typeof taskIdSchema>
+export type ExecutionId = z.infer<typeof executionIdSchema>
+export type CriterionId = z.infer<typeof criterionIdSchema>
 export type ProjectRecordId = z.infer<typeof projectRecordIdSchema>
 export type ResourceRefId = z.infer<typeof resourceRefIdSchema>
 export type InboxMessageId = z.infer<typeof inboxMessageIdSchema>
 export type ReceiptId = z.infer<typeof receiptIdSchema>
 export type HumanRequestId = z.infer<typeof humanRequestIdSchema>
 export type HumanAnswerId = z.infer<typeof humanAnswerIdSchema>
+export type ConfirmationId = z.infer<typeof confirmationIdSchema>
 export type ChallengeId = z.infer<typeof challengeIdSchema>
 export type RequestId = z.infer<typeof requestIdSchema>
+export type TraceId = z.infer<typeof traceIdSchema>
 export type InstallationId = z.infer<typeof installationIdSchema>
 
 export const revisionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
@@ -98,13 +106,13 @@ export type AssuranceLevel = z.infer<typeof assuranceLevelSchema>
 export const jsonObjectSchema = z.record(z.string(), z.json())
 export type JsonObject = z.infer<typeof jsonObjectSchema>
 
-const credentialKeyPattern = /(?:^|[_-])(?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|api[_-]?key|private[_-]?key|access[_-]?key|challenge)(?:$|[_-])/iu
+const credentialKeyPattern = /(?:^|[_-])(?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|api[_-]?key|private[_-]?key|access[_-]?key|challenge|binding[_-]?code|nonce)(?:$|[_-])/iu
 const embeddedCredentialPatterns = [
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gu,
   /([a-z][a-z0-9+.-]*:\/\/[^\s:/]+:)[^\s@]+@/giu
 ] as const
-const embeddedCredentialAssignmentPattern = /(^|[?&#;,\s])((?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|token|api[_-]?key|private[_-]?key|access[_-]?key)\s*(?:=|:)\s*)([^\s&#;,]+)/giu
+const embeddedCredentialAssignmentPattern = /(^|[?&#;,\s])((?:authorization|credential|device[_-]?token|access[_-]?token|refresh[_-]?token|password|passphrase|secret|signature|sig|token|api[_-]?key|private[_-]?key|access[_-]?key|binding[_-]?code|nonce)\s*(?:=|:)\s*)([^\s&#;,]+)/giu
 
 export const REDACTED_VALUE = '[REDACTED]' as const
 
@@ -130,6 +138,10 @@ export function isCredentialFieldName(key: string): boolean {
     'secret',
     'signature',
     'sig',
+    'nonce',
+    'noncedigest',
+    'bindingcode',
+    'bindingcodedigest',
     'apikey',
     'privatekey',
     'accesskey'

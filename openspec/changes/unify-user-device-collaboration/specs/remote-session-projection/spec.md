@@ -96,6 +96,6 @@ Active projection SHALL 同步本地和远端 user message 及最终 assistant r
 
 #### Scenario: 远端消息被编辑
 
-- **WHEN** 已接受的消息在 Zulip 中被编辑
+- **WHEN** 已接受的消息在所选 Provider 中被编辑
 - **THEN** 原本地消息和 turn SHALL 保持不变
 - **AND** 用户 SHALL 通过新消息更正或由系统记录审计事件。

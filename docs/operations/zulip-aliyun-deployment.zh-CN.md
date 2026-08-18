@@ -3,7 +3,7 @@
 > [!WARNING]
 > 本文记录的是 `47.243.145.156` 上既有（legacy）Zulip 与旧协作服务的 2026-08-15 运行基线。它不能证明新 A ECS `47.76.230.118` 已接管协作服务，也不能证明新 A 的固定 commit、数据库或合同已经通过公网路径。迁移期间必须把两套部署、数据和凭据视为彼此独立。
 >
-> 产品 canonical URL 目标仍是 `https://chat.sciforge.cn/collaboration/`。只有完成受控反向代理切换，并核对该 HTTPS 路径返回新 A 的固定合同和真实业务数据后，才可声明“Zulip → 新 A 云端协同服务 → 本地最新版 SciForge”已经生效。
+> 新 A 的正式入口、Human Provider、Zulip 是否参与以及 A 与本地最新版 SciForge 之间的消息方向均尚未形成经团队确认的方案。`https://chat.sciforge.cn/collaboration/` 只表示本文记录的 legacy 服务地址，不是新 A 的 canonical 目标，也不能据此推导未来产品链路。
 
 > 状态基线：2026-08-15（Asia/Shanghai）
 >
@@ -11,7 +11,7 @@
 >
 > Zulip：`https://chat.sciforge.cn`
 >
-> 协作服务：`https://chat.sciforge.cn/collaboration/`
+> legacy 协作服务：`https://chat.sciforge.cn/collaboration/`（仅作历史运行记录）
 
 本文主要保留 legacy 环境的源码开发启动、生产部署、升级、恢复和历史端到端验收记录；其中“当前”“已通过”等表述均以 `47.243.145.156` 的上述日期基线为范围，不自动适用于新 A ECS。用户配对、Session 投影和手机验收步骤见
 [手机与多人协作使用手册](../collaboration-user-guide.zh-CN.md)。本文中的尖括号均为占位符；不得把密码、

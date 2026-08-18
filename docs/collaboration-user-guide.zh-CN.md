@@ -1,24 +1,24 @@
-# SciForge 手机与多人协作使用手册
+# SciForge 手机与多人协作既有 Zulip 试运行手册（Legacy）
 
-本文说明统一协作功能的日常使用方式。运维部署、备份和故障恢复见
-[香港 ECS 与 Zulip 运维手册](./operations/zulip-aliyun-deployment.zh-CN.md)。
+> [!WARNING]
+> 本文只记录既有 `chat.sciforge.cn` + Zulip 试运行环境的用户操作，不能作为新 A 云端协同服务的接入方案。新 A 的正式入口、Human Provider、Zulip 是否参与、消息方向以及最新版 SciForge 的接法均尚未由团队确认。当前团队成员应以 A 发布的 B/C 合同资料和预开放指南为准；方案冻结后再另行发布正式用户手册。
 
-> 普通用户不需要选择、切换或理解任何 Git 分支。管理员提供可安装的 SciForge 桌面版、协作服务
-> 地址和个人 Zulip 账号后，按本文操作即可。只有从源码启动桌面端的开发者才需要接触 Git。
+本文保留 legacy Zulip 试运行的日常操作记录。对应的历史运维、备份和故障恢复见
+[既有 47.243 ECS 与 Zulip 运行记录](./operations/zulip-aliyun-deployment.zh-CN.md)。
 
-## 普通用户最短入口
+> 复现 legacy 试运行的用户不需要选择、切换或理解任何 Git 分支。只有在管理员明确提供该历史环境的 SciForge 桌面版、legacy 协作服务地址和测试 Zulip 账号时才按本文操作。新 A 的团队接入不得照搬这些参数。
 
-开始前只向管理员确认三项信息：
+## 既有试运行入口（不适用于新 A）
+
+仅在管理员明确要求复现 legacy Zulip 试运行时，开始前确认三项信息：
 
 1. SciForge 桌面安装包或已安装的桌面应用；
-2. 协作服务地址，例如 `https://chat.sciforge.cn/collaboration`；
+2. legacy 协作服务地址，例如 `https://chat.sciforge.cn/collaboration`；
 3. 自己的 Zulip 账号、Zulip Server 地址以及允许使用的 channel / Topic。
 
-然后完成四步：安装并登录**官方 Zulip 手机 App** → 启动 SciForge 桌面端 → 在桌面“协作”面板连接
-管理员提供的云端地址 → 点击“开始手机配对”，复制完整指令并从手机 Zulip 原样发送。
+然后按本文复现既有试运行步骤。该步骤不代表新 A 已选择 Zulip，也不代表正式产品入口或双向消息链路已经确定。
 
-当前手机端就是官方 Zulip App，不是 SciForge 仓库内开发或打包的自研手机 App；用户无需编译、安装
-仓库中的任何移动端工程。
+在本文记录的 legacy 试运行中，手机端使用官方 Zulip App，而不是 SciForge 仓库内的自研手机 App；这不是对新 A 最终 Human Provider 或客户端形态的决定。
 
 ## 版本与发布关系
 
@@ -63,13 +63,13 @@ Coordinator，不是任何成员的私人 Session，也不会广播唤醒全部 
 
 1. 启动新版 SciForge，并打开任意 Session；手机绑定本身不要求先选择 Project。
 2. 点击工具栏的协作个体图标，打开右侧“协作”面板。
-3. 在“协作服务地址”填写管理员提供的地址；当前部署示例为
+3. 在“协作服务地址”填写管理员提供的地址；本文记录的 legacy 示例为
    `https://chat.sciforge.cn/collaboration`。点击“保存并连接”。
 4. 状态应从“连接中”变为“已连接”。如果显示“连接异常”，不要反复注册；先看“队列与恢复”的明确错误。
 
 ## 3. 绑定个人手机端点
 
-1. 在“协作个体”中选择 Zulip，并填写界面要求的 Realm；当前 Realm 为
+1. 在“协作个体”中选择 Zulip，并填写界面要求的 Realm；legacy 试运行 Realm 为
    `https://chat.sciforge.cn`。
 2. 点击“开始手机配对”。桌面会显示一条短期、一次性的完整命令，形如
    `sciforge-pair <challengeId> <challengeCode>`。

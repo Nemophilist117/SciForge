@@ -1,6 +1,8 @@
 import { digestSecret } from './crypto.js'
-import { fail } from './errors.js'
+import { CollaborationServiceError, fail } from './errors.js'
+import type { IdentityService } from './identity-service.js'
 import type { Assurance, InboxRecipient, StoredEndpoint } from './model.js'
+import { OidcVerificationError, type OidcAccessTokenVerifier } from './oidc.js'
 import type { CollaborationReadRepository } from './repository.js'
 
 export type SystemActor = { kind: 'system'; actorKey: string }
@@ -8,7 +10,10 @@ export type UserActor = {
   kind: 'user'
   actorKey: string
   userId: string
-  credentialId: string
+  identityId: string
+  issuer: string
+  subject: string
+  authTime: number
   assurance: 'verified' | 'strong'
 }
 export type HumanEndpointActor = {
@@ -23,10 +28,44 @@ export type AgentActor = {
   actorKey: string
   userId: string
   agentId: string
+  deviceId: string
   credentialId: string
   assurance: 'device'
 }
 export type AuthContext = SystemActor | UserActor | HumanEndpointActor | AgentActor
+
+export type OidcUserResolver = Readonly<{
+  isCandidate(token: string): boolean
+  resolve(token: string): Promise<UserActor>
+}>
+
+export class StrictOidcUserResolver implements OidcUserResolver {
+  constructor(
+    private readonly verifier: OidcAccessTokenVerifier,
+    private readonly identities: IdentityService
+  ) {}
+
+  isCandidate(token: string): boolean {
+    return token.split('.').length === 3
+  }
+
+  async resolve(token: string): Promise<UserActor> {
+    try {
+      return await this.identities.resolveOidcUser(await this.verifier.verifyAccessToken(token))
+    } catch (error) {
+      if (error instanceof CollaborationServiceError) throw error
+      if (error instanceof OidcVerificationError) {
+        if (error.code === 'oidc_discovery_unavailable' || error.code === 'oidc_jwks_unavailable') {
+          fail('resource_offline', 'The configured OIDC authentication dependency is unavailable.', {
+            retryable: true
+          })
+        }
+        fail('authentication_required', 'The OIDC access token is not valid.')
+      }
+      fail('authentication_required', 'The OIDC access token could not be verified.')
+    }
+  }
+}
 
 export type PermissionOperation =
   | 'personal_message'
@@ -142,7 +181,7 @@ export function authorize(facts: PermissionFacts): void {
       return
     case 'project_admin':
       if (actor.kind !== 'user' || facts.projectRole !== 'owner') {
-        fail('permission_denied', 'This Project operation requires the owner user credential.')
+        fail('permission_denied', 'This Project operation requires the authenticated owner User actor.')
       }
       return
     case 'record_submit':
@@ -168,10 +207,23 @@ export function authorize(facts: PermissionFacts): void {
 }
 
 export class AuthenticationService {
-  constructor(private readonly repository: CollaborationReadRepository, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly repository: CollaborationReadRepository,
+    private readonly now: () => Date = () => new Date(),
+    private readonly oidc?: OidcUserResolver
+  ) {}
 
   async resolveBearer(token: string | undefined): Promise<UserActor | AgentActor> {
-    if (!token || token.length < 24 || token.length > 512) fail('authentication_required', 'A valid bearer credential is required.')
+    if (!token || token.length < 16 || token.length > 16 * 1024 || /\s/u.test(token)) {
+      fail('authentication_required', 'A valid bearer credential is required.')
+    }
+    if (token.split('.').length === 3) {
+      if (!this.oidc || !this.oidc.isCandidate(token)) {
+        fail('authentication_required', 'OIDC User authentication is not configured.')
+      }
+      return this.oidc.resolve(token)
+    }
+    if (token.length > 512) fail('authentication_required', 'The bearer credential is not recognized.')
     const credential = await this.repository.getCredentialByDigest(digestSecret(token))
     if (!credential) fail('authentication_required', 'The bearer credential is not recognized.')
     if (credential.revokedAt || (credential.expiresAt && credential.expiresAt <= this.now().toISOString())) {
@@ -180,13 +232,7 @@ export class AuthenticationService {
     const user = await this.repository.getUser(credential.subjectUserId)
     if (!user || user.status !== 'active') fail('credential_revoked', 'The user principal is not active.')
     if (credential.kind === 'user') {
-      return {
-        kind: 'user',
-        actorKey: `user:${user.userId}:credential:${credential.credentialId}`,
-        userId: user.userId,
-        credentialId: credential.credentialId,
-        assurance: credential.assurance === 'strong' ? 'strong' : 'verified'
-      }
+      fail('authentication_required', 'Legacy opaque User credentials are no longer accepted.')
     }
     const agentId = credential.subjectAgentId
     if (!agentId) fail('authentication_required', 'The device credential has no Agent subject.')
@@ -194,17 +240,30 @@ export class AuthenticationService {
     if (!agent || agent.status !== 'active' || agent.ownerUserId !== user.userId || agent.credentialGeneration !== credential.generation) {
       fail('credential_revoked', 'The Agent device identity is no longer active.')
     }
+    if (!agent.deviceId) fail('credential_revoked', 'The Agent is not linked to an active Device.')
+    const device = await this.repository.getDevice(agent.deviceId)
+    if (!device || device.status !== 'active' || device.userId !== user.userId) {
+      fail('credential_revoked', 'The Agent Device is no longer active.')
+    }
     return {
       kind: 'agent_device',
       actorKey: `agent:${agent.agentId}:credential:${credential.credentialId}`,
       userId: user.userId,
       agentId: agent.agentId,
+      deviceId: device.deviceId,
       credentialId: credential.credentialId,
       assurance: 'device'
     }
   }
 
   async resolveProviderIdentity(provider: string, realmId: string, providerUserId: string): Promise<HumanEndpointActor> {
+    if (provider === 'zulip') {
+      const identity = await this.repository.getExternalIdentityByProviderIdentity(realmId, providerUserId)
+      if (!identity || identity.status !== 'active') {
+        fail('authentication_required', 'The provider identity is not actively bound.')
+      }
+      return this.endpointActor(await this.repository.getEndpoint(identity.humanEndpointId))
+    }
     const endpoint = await this.repository.getEndpointByProviderIdentity(provider, realmId, providerUserId)
     return this.endpointActor(endpoint)
   }

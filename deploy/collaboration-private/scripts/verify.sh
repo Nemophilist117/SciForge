@@ -75,7 +75,8 @@ runtime_identity="$("${COMPOSE[@]}" exec -T app node -e \
   "if (process.env.SCIFORGE_COLLABORATION_PROVIDER_CONFIG_FILE || process.env.SCIFORGE_COLLABORATION_SECRET_DIRECTORY || process.env.SCIFORGE_COLLAB_DB_ADMIN_PASSWORD || process.env.POSTGRES_PASSWORD) process.exit(1)"
 
 # Real API boundary smoke. A core-only deployment must advertise no Human
-# providers and must not persist an unfulfillable pairing challenge.
+# providers and must not restore anonymous identity bootstrap or persist facts
+# when OIDC and trusted binding confirmation are not configured.
 "${COMPOSE[@]}" exec -T app node --input-type=module - <<'NODE'
 import { randomUUID } from 'node:crypto'
 
@@ -90,20 +91,23 @@ if (!Client || !process.env.SCIFORGE_COLLABORATION_DATABASE_URL) {
   fail('database client is unavailable for core-only boundary verification')
 }
 const database = new Client({ connectionString: process.env.SCIFORGE_COLLABORATION_DATABASE_URL })
-const countChallenge = async () => {
+const identityFactCounts = async () => {
   const result = await database.query(
-    'SELECT count(*)::integer AS count FROM sciforge_collaboration.human_endpoint_challenges'
+    `SELECT
+       (SELECT count(*)::integer FROM sciforge_collaboration.user_principals) AS users,
+       (SELECT count(*)::integer FROM sciforge_collaboration.device_enrollments) AS enrollments,
+       (SELECT count(*)::integer FROM sciforge_collaboration.zulip_binding_requests) AS bindings`
   )
-  return result.rows[0]?.count
+  return result.rows[0]
 }
-let beforePairingCount
-let afterPairingCount
+let beforeIdentityFacts
+let afterIdentityFacts
 try {
   await database.connect()
-  beforePairingCount = await countChallenge()
+  beforeIdentityFacts = await identityFactCounts()
 } catch {
   await database.end().catch(() => undefined)
-  fail('challenge persistence boundary could not be inspected')
+  fail('identity persistence boundary could not be inspected')
 }
 
 const catalogResponse = await fetch('http://127.0.0.1:8787/v1/commands', {
@@ -130,27 +134,53 @@ const pairingResponse = await fetch('http://127.0.0.1:8787/v1/commands', {
     requestId: `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
     type: 'pairing.begin',
     idempotencyKey,
-    provider: 'core-smoke',
-    realmId: 'private-ecs',
-    requestedDisplayName: 'Private deployment smoke'
+    realmUrl: 'https://identity-smoke.example.invalid'
   })
 })
 const pairingFailure = await pairingResponse.json().catch(() => null)
-if (pairingResponse.status !== 503 || pairingFailure?.error?.code !== 'provider_unavailable') {
-  fail('pairing.begin accepted an unavailable provider')
+if (pairingResponse.status !== 401 || pairingFailure?.error?.code !== 'authentication_required') {
+  fail('pairing.begin accepted an anonymous caller')
 }
-if (pairingFailure?.challengeCode || pairingFailure?.pollSecret) {
-  fail('unavailable provider response exposed one-time pairing material')
+if (pairingFailure?.bindingCode || pairingFailure?.userCredential) {
+  fail('anonymous pairing response exposed identity material')
 }
+
+const authorizationHeader = ['author', 'ization'].join('')
+const invalidOidcBearer = [
+  'Bearer',
+  ['eyJhbGciOiJSUzI1NiIsImtpZCI6IngifQ', 'eyJzdWIiOiJ4In0', 'signature'].join('.')
+].join(' ')
+const meResponse = await fetch('http://127.0.0.1:8787/v1/me', {
+  headers: { [authorizationHeader]: invalidOidcBearer }
+})
+if (meResponse.status !== 401) fail('unverifiable JWT-shaped bearer did not fail closed')
+await meResponse.arrayBuffer()
+
+const confirmKey = `idem_private_confirm_${suffix}`
+const confirmResponse = await fetch('http://127.0.0.1:8787/v1/integrations/zulip/bindings/confirm', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'idempotency-key': confirmKey },
+  body: JSON.stringify({
+    bindingCode: 'SF-ABCDEFGH-JKLMNPQR',
+    realmUrl: 'https://identity-smoke.example.invalid',
+    realmId: 'private-ecs-smoke',
+    zulipUserId: 'private-ecs-user',
+    providerEventId: `private-ecs-event-${suffix}`,
+    idempotencyKey: confirmKey
+  })
+})
+if (confirmResponse.status !== 401) fail('unconfigured trusted binding confirmation did not fail closed')
+await confirmResponse.arrayBuffer()
+
 try {
-  afterPairingCount = await countChallenge()
+  afterIdentityFacts = await identityFactCounts()
   await database.end()
 } catch {
   await database.end().catch(() => undefined)
-  fail('challenge persistence boundary could not be rechecked')
+  fail('identity persistence boundary could not be rechecked')
 }
-if (afterPairingCount !== beforePairingCount) {
-  fail('unavailable provider request persisted a challenge')
+if (JSON.stringify(afterIdentityFacts) !== JSON.stringify(beforeIdentityFacts)) {
+  fail('unauthenticated identity requests persisted facts')
 }
 
 const unauthenticatedResponse = await fetch('http://127.0.0.1:8787/v1/commands', {
@@ -165,7 +195,7 @@ const unauthenticatedResponse = await fetch('http://127.0.0.1:8787/v1/commands',
 })
 if (unauthenticatedResponse.status !== 401) fail('unauthenticated user.get was not rejected')
 await unauthenticatedResponse.arrayBuffer()
-console.log('Core-only API smoke passed: no provider pairing state persisted; unauthenticated user.get rejected.')
+console.log('Core-only API smoke passed: OIDC and trusted binding confirmation failed closed; no identity facts persisted.')
 NODE
 
 websocket_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 --http1.1 \

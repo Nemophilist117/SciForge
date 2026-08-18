@@ -2,7 +2,9 @@
 
 > 清单定位：这是 `origin/gui` 既有跨团队 umbrella change 的累计记录，`[x]` 表示相应系统能力已在该基线中形成，不表示 A 在本轮重新实现或接管了全部条目。
 >
-> A 本轮 release gate 仅由云端公共合同、Cloud Server/PostgreSQL、云端 Human/Zulip Provider、A-only 控制台、部署/恢复、公共 API/示例和 10.9 的真实接线组成。第 5、6、7、9 节中的桌面领域、AgentRuntime、个人 Session、Coordinator/Worker 业务逻辑和客户端迁移属于既有 SciForge 或其他负责人；A 只维护其云端交换合同与确定性权限。
+> A 本轮 release gate 仅由云端公共合同、Cloud Server/PostgreSQL、provider-neutral Human 边界、A-only 控制台、部署/恢复、公共 API/示例、机器可读协议制品和服务器自动 conformance 组成。第 5、6、7、9 节中的桌面领域、AgentRuntime、个人 Session、Coordinator/Worker 业务逻辑和客户端迁移属于既有 SciForge 或其他负责人；A 只维护其云端交换合同与确定性权限。
+>
+> 正式 Human Provider、Zulip 拓扑、最新版 SciForge 接线、公网入口和端到端产品链路尚未形成确认方案。本清单不得把候选“Zulip → A → 本地 SciForge → A → Zulip”写成已完成门槛；真实 E2E 保持未完成。
 
 ## 1. 合同与包边界
 
@@ -15,12 +17,12 @@
 ## 2. 统一用户与端点身份
 
 - [x] 2.1 实现 UserPrincipal 生命周期、登录主体和 suspended/revoked 行为，使 Project 成员、Agent owner 和 HumanNeeded 都引用稳定 userId。
-- [x] 2.2 实现 Human Endpoint 短期 challenge、provider sender 验证、唯一绑定、assurance、暂停、撤销和显式转移。
+- [x] 2.2 实现 Human Endpoint 短期 binding code、provider sender 验证、唯一绑定、assurance、暂停、撤销和显式转移；公共入口使用 OIDC identity REST/兼容 `pairing.begin` 状态机，旧 `endpoint.challenge.create` command 永久 fail closed 并标记为 reserved。
 - [x] 2.3 实现 SciForge device registration、稳定 agentId、ownerUserId、device credential secret、心跳、撤销和凭据轮换。
 - [x] 2.4 实现 ParticipantProfile，允许用户从自己拥有的端点和 Agent 中显式选择 primary，禁止最近在线或跨用户回退。
-- [x] 2.5 增加身份冲突、显示名修改、重复 challenge、端点被盗、Agent 被盗、owner 转移和撤销后的安全测试。
+- [x] 2.5 增加身份冲突、显示名修改、重复 binding code、端点被盗、Agent 被盗、owner 转移和撤销后的安全测试。
 - [x] 2.6 审计 settings、日志、诊断、二维码、测试 fixture、导出和 Git 文件，确保不存在长期 token、API key、challenge、密码或私钥。
-- [x] 2.7 实现 `credential.revoke_current`，只从认证上下文撤销当前 User/Agent Bearer，并验证其他凭据不受影响。
+- [x] 2.7 实现 Agent-only `credential.revoke_current`，只从认证上下文撤销当前 opaque Agent Bearer，并验证其他凭据不受影响；OIDC User Token 的登出、刷新与撤销仍由 issuer 管理。
 
 ## 3. 云端协作内核
 
@@ -30,14 +32,16 @@
 - [x] 3.4 在同一数据库事务中提交状态变化、审计和 InboxMessage；WebSocket 只发送 `inbox.available`，客户端通过 sequence 拉取并 ack。
 - [x] 3.5 实现服务重启恢复、离线信箱、cursor、bounded retention、重复请求 reconciliation 和被撤销凭据的即时拒绝。
 - [x] 3.6 实现 Project Record 访问控制与接受流程，禁止个人 transcript、凭据、本地路径或完整工具日志自动进入云端共享记忆。
-- [x] 3.7 实现 Project 成员可读的最小 Agent capability directory，隐藏凭据、installation identity 和本地运行时详情。
-- [x] 3.8 实现当前 assignee 的结构化 Task progress 与可查询结果摘要，复用 revision、幂等、审计和 Coordinator inbox。
-- [x] 3.9 实现 provider-neutral ResourceRef 创建、查询和失效，严格拒绝正文、凭据、非 HTTPS URL 与本地绝对路径。
-- [x] 3.10 暴露 `task.retry`：同一 assignee 重试仅接受 `failed/rejected`，允许 Project Owner 或当前 Coordinator Agent 发起；变更 assignee 时允许 Owner 从 `offered/accepted/running/needs_human/failed/rejected` 主动改派；以单事务完成预算、并发冲突、pending HumanRequest 过期和旧 assignee 拒绝。
+- [x] 3.7 实现 `agent.capability_profile.report` 与 Project 成员可读的有期限 Agent capability directory；A 派生在线/忙碌/撤销状态，并隐藏凭据、地址、installation identity、本地路径和模块私有结构。
+- [x] 3.8 实现当前 execution assignee 的结构化 Task progress，以及 succeeded 与唯一候选 `task_result` ProjectRecord 的单事务写入，复用 revision、幂等、审计和 Coordinator inbox。
+- [x] 3.9 实现 provider-neutral ResourceRef 创建、查询、`available/unavailable/revoked` 转换（保留既有 `invalidated` 终态）与 Task execution fencing，严格拒绝正文、凭据、短期签名身份、非 HTTPS URL 与本地绝对路径。
+- [x] 3.10 暴露 `task.retry`：同一 assignee 对 `succeeded/failed/rejected` 重做，变更 assignee 要求 Owner 直接调用或当前 Coordinator 携带动作绑定确认；单事务生成新 execution、supersede 未接受候选、处理并发与 pending HumanRequest，并拒绝旧 execution 写入；accepted 结果不能被普通 retry 撤销。
 - [x] 3.11 处理 PostgreSQL idle client error，保证数据库重启不退出应用且日志不展开 Client、连接参数或 secretKey。
 - [x] 3.12 提供 A-only 同源网页控制台，覆盖 Project/Task 权威查询、Owner 确认、能力目录、User Inbox、ProjectRecord 与 ResourceRef；Bearer 只保存在页面内存，不实现 B–E 私有逻辑。
 
 ## 4. Zulip 与 Human Gateway
+
+> 本节 `[x]` 只表示 provider-neutral runtime 与可选 Zulip adapter 的代码/自动测试存在，不表示 Zulip 已被选为正式产品 Provider，也不冻结 Provider→A→最新版 SciForge 的拓扑。
 
 - [x] 4.1 定义通用 Human Endpoint Provider 合同，覆盖身份验证、事件游标、locator、发送、topic rename/move、重试、自回声过滤和 redacted diagnostics。
 - [x] 4.2 把 Zulip realm、bot、stream/topic lookup、event queue 和 send 逻辑迁入 provider adapter；通用 server core 和 Host 不出现 Zulip 分支。
@@ -106,6 +110,24 @@
 - [x] 10.6 更新中文用户及运维文档，区分 User、手机端点、Agent、个人 Session、Project topic、Task、在线依赖、权限保证和故障恢复。
 - [x] 10.7 发布 A 最小公共 API 中文说明与真实请求示例，覆盖身份、Project/成员、能力、Task 路由、Owner 人工确认、进度、结果、消息和 ResourceRef。
 - [x] 10.8 实现 team-private-acceptance 固定 bundle、Provider overlay、数据库重启验收和独立 tunnel-only 账号资产。
-- [ ] 10.9 **A 本轮唯一外部接线门槛：**把 canonical `https://chat.sciforge.cn/collaboration` 安全切换到 A 专用 ECS，在正式 Zulip Provider 下完成 Owner/Member、双 Agent、Project、Task/Human/Resource/Record、改派和凭据撤销的服务器 conformance，并用最新版 SciForge 验证一次真实 Zulip→A→本地→A→Zulip 闭环。
-- [x] 10.10 发布两份 `0.2-corrected` 脱敏团队指南，明确 HTTPS 产品链路、Tunnel 仅调试、普通成员无需个人 Zulip API key，以及 A/B/C/D/E 权限边界。
-- [ ] 10.11 A 发出业务开放通知后，再按实际低层调试需要为 B–E 配置各自限时 Tunnel；正式产品身份由每名成员通过最新版 SciForge 与 Zulip 自行 pairing，A 不收集其应用 Bearer。
+- [ ] 10.9 团队先确认正式 Human Provider、身份前置、Zulip（如采用）拓扑、最新版 SciForge 接法和公网入口，再把确认后的唯一链路写成独立部署/E2E 门槛；当前不得用候选链路替代方案决策。
+- [x] 10.10 发布两份脱敏团队指南，明确当前 core-only/Tunnel 验收边界、协议制品、A/B/C/D/E 权限边界，以及 Provider/产品链路未冻结；删除任何把候选 HTTPS/Zulip 路径写成已开放事实的表述。
+- [ ] 10.11 只有身份业务前置和产品链路方案通过后，才通知成员开始真实 pairing/Agent/Project 测试；Tunnel 仅按实际低层调试需要独立配置，A 不收集普通成员应用 Bearer。
+
+## 11. B/C 交叉评审增量（A-MVP-001～012）
+
+> 本节只勾选已有合同/服务/数据库/fixture 或部署脚本自动验证的 A 服务端能力。B Coordinator 算法、C AgentRuntime/journal、正式 Provider 和真实最新版 SciForge E2E 都不在这些 `[x]` 的含义中。
+
+- [x] 11.1 **A-MVP-001**：增加不透明 `executionId`；create/retry 生成、同 execution 状态变化保持，Worker progress/HumanNeeded/ResourceRef/result 全部执行 fencing，并有旧 execution 拒绝测试。
+- [x] 11.2 **A-MVP-002**：把 `succeeded` 定义为 execution 成功并允许未接受结果重做；自动测试已验证 accepted `task_result` 后普通 retry 被拒绝且正式记录保持不变。
+- [x] 11.3 **A-MVP-003**：succeeded transition 与该 execution 唯一候选 `task_result` ProjectRecord、幂等 receipt 和 Coordinator Inbox 在单事务提交，并有响应重放/唯一性测试。
+- [x] 11.4 **A-MVP-004**：实现 strict ConfirmableAction/confirmationId、Owner 直接路径与 Coordinator delegated 路径；自动测试覆盖精确匹配、错 action/execution/assignee、消费与重复使用拒绝。
+- [x] 11.5 **A-MVP-005**：`human.needed.create` 同时支持 Worker task/execution 来源和 Coordinator sourceInboxMessage 来源，只有 Worker 来源改变 Task 状态，并有 actor/target/恢复测试。
+- [x] 11.6 **A-MVP-006**：实现严格 `agent.capability_profile.report`、profile revision/expiry 和由 A 派生状态的 Project capability directory；自动测试覆盖 expiry 与 owner mismatch 的创建/重试拒绝。
+- [x] 11.7 **A-MVP-007**：实现 ProjectCoordinationView 项目范围读取，聚合 Project/member/Task/Record/Human facts 并执行项目权限/隔离测试。
+- [x] 11.8 **A-MVP-008**：生成并 freshness 校验协议 `1.0` JSON Schema、状态/权限表和正常/冲突 fixtures；制品来自固定合同源码而非手工副本。
+- [x] 11.9 **A-MVP-009**：实现连续 Inbox ACK、superseded gap 与 Coordinator recipient-specific supersede/reroute；自动测试覆盖转交重投递、旧 ACK 隔离和跨 tombstone 连续确认。
+- [x] 11.10 **A-MVP-010**：冻结 execution/assignee/coordinator/confirmation/resource/capability/ACK 稳定错误，所有公共错误带 requestId/traceId/retryable，并有 strict schema/API 测试。
+- [x] 11.11 **A-MVP-011**：实现 ResourceRef `available/unavailable/revoked`（兼容既有 `invalidated` 终态）、安全 HTTPS 元数据、Task execution 绑定/read fencing 与失效资源拒绝测试；A 不上传正文或完整日志。
+- [x] 11.12 **A-MVP-012**：自动部署校验区分 health、PostgreSQL readiness、core-only 空 catalog 和 provider-enabled 独立诊断；文档与门禁禁止用 core-only ready 冒充 pairing/E2E 已开放。
+- [ ] 11.13 **真实联合 E2E（非 A-MVP-001～012 自动 conformance）**：待团队确认 Provider/Zulip/最新版 SciForge 具体方案后，由真实模块完成身份、Project、execution、Human、Resource 和结果往返；API fake/harness 不能冒充该证据。

@@ -17,6 +17,7 @@ import {
 } from './index.js'
 import {
   INVALID_TEST_ONLY_CREDENTIAL_FIXTURE,
+  TEST_IDS,
   invalidTestOnlyValue,
   redactedCredentialFixture
 } from './testing.js'
@@ -106,6 +107,7 @@ describe('credential redaction', () => {
 describe('typed errors', () => {
   it('constructs an error with frozen category, status, and retryability', () => {
     const error = createCollaborationError('revision_conflict', 'Revision has changed.', {
+      traceId: TEST_IDS.traceId,
       expectedRevision: 1,
       currentRevision: 2,
       details: { deviceToken: REDACTED_VALUE }
@@ -119,17 +121,21 @@ describe('typed errors', () => {
   })
 
   it('rejects callers that rewrite frozen error semantics or add unknown fields', () => {
-    const valid = createCollaborationError('permission_denied', 'Not authorized.')
+    const valid = createCollaborationError('permission_denied', 'Not authorized.', { traceId: TEST_IDS.traceId })
     expect(() => ({ ...valid, retryable: true })).not.toThrow()
     const schema = (async () => import('./errors.js'))
     return schema().then(({ collaborationErrorSchema }) => {
       expect(collaborationErrorSchema.safeParse({ ...valid, retryable: true }).success).toBe(false)
+      const { traceId: _traceId, ...withoutTrace } = valid
+      expect(collaborationErrorSchema.safeParse(withoutTrace).success).toBe(false)
       expect(collaborationErrorSchema.safeParse({ ...valid, debugStack: 'hidden' }).success).toBe(false)
     })
   })
 
   it('represents provider identity ownership collisions as a stable non-retryable conflict', () => {
-    expect(createCollaborationError('identity_conflict', 'Provider identity is already bound.')).toMatchObject({
+    expect(createCollaborationError('identity_conflict', 'Provider identity is already bound.', {
+      traceId: TEST_IDS.traceId
+    })).toMatchObject({
       code: 'identity_conflict',
       category: 'conflict',
       httpStatus: 409,

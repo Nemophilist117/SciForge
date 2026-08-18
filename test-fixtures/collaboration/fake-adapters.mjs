@@ -6,10 +6,49 @@ function recipientKey(recipient) {
   return `${recipient.kind}:${recipient.id}`
 }
 
+export function fakeAgentActor(agent, userId = agent.ownerUserId) {
+  return {
+    kind: 'agent_device',
+    actorKey: `fake-agent:${agent.agentId}`,
+    userId,
+    agentId: agent.agentId,
+    ...(agent.deviceId ? { deviceId: agent.deviceId } : {}),
+    credentialId: `fake-credential:${agent.agentId}`,
+    assurance: 'device'
+  }
+}
+
 function revisionUpdate(map, id, value, expectedRevision) {
   const current = map.get(id)
   if (!current || current.revision !== expectedRevision) throw new Error('fake repository revision conflict')
   map.set(id, copy(value))
+}
+
+function endpointFromExternalIdentity(identity) {
+  return {
+    ...copy(identity),
+    providerUserId: identity.zulipUserId,
+    assurance: 'verified'
+  }
+}
+
+function externalIdentityFromEndpoint(endpoint) {
+  if (!endpoint?.externalIdentityId || endpoint.provider !== 'zulip') return null
+  return copy({
+    externalIdentityId: endpoint.externalIdentityId,
+    humanEndpointId: endpoint.humanEndpointId,
+    userId: endpoint.userId,
+    provider: 'zulip',
+    realmUrl: endpoint.realmUrl,
+    realmId: endpoint.realmId,
+    zulipUserId: endpoint.providerUserId,
+    status: endpoint.status,
+    revision: endpoint.revision,
+    verifiedAt: endpoint.verifiedAt,
+    createdAt: endpoint.createdAt,
+    updatedAt: endpoint.updatedAt,
+    ...(endpoint.revokedAt ? { revokedAt: endpoint.revokedAt } : {})
+  })
 }
 
 export class FakeClock {
@@ -259,15 +298,21 @@ export class FakeCollaborationRepository {
   #emptyState() {
     return {
       users: new Map(),
+      oidcIdentities: new Map(),
+      deviceEnrollments: new Map(),
+      devices: new Map(),
+      zulipBindingRequests: new Map(),
       challenges: new Map(),
       endpoints: new Map(),
       agents: new Map(),
+      capabilityProfiles: new Map(),
       participants: new Map(),
       projections: new Map(),
       projectEndpointBindings: new Map(),
       projectInputs: new Map(),
       humanRequests: new Map(),
       humanAnswers: new Map(),
+      actionConfirmations: new Map(),
       projects: new Map(),
       projectMembers: new Map(),
       tasks: new Map(),
@@ -304,8 +349,18 @@ export class FakeCollaborationRepository {
 
   async lockIdempotency() {}
 
+  // Fake transactions are globally serialized, so both advisory-lock APIs are
+  // already represented by transactionTail rather than a second lock graph.
+  async lockOidcIdentity() {}
+
+  async lockZulipBindingIdentity() {}
+
   async getUser(userId) {
     return copy(this.state.users.get(userId) ?? null)
+  }
+
+  async getUserForUpdate(userId) {
+    return this.getUser(userId)
   }
 
   async insertUser(user) {
@@ -315,6 +370,167 @@ export class FakeCollaborationRepository {
 
   async updateUser(user, expectedRevision) {
     revisionUpdate(this.state.users, user.userId, user, expectedRevision)
+  }
+
+  async getOidcIdentity(identityId) {
+    return copy(this.state.oidcIdentities.get(identityId) ?? null)
+  }
+
+  async getOidcIdentityByIssuerSubject(issuer, subject) {
+    return copy([...this.state.oidcIdentities.values()].find((identity) => (
+      identity.issuer === issuer && identity.subject === subject
+    )) ?? null)
+  }
+
+  async getOidcIdentityForUpdate(identityId) {
+    return this.getOidcIdentity(identityId)
+  }
+
+  async getOidcIdentityByIssuerSubjectForUpdate(issuer, subject) {
+    return this.getOidcIdentityByIssuerSubject(issuer, subject)
+  }
+
+  async insertOidcIdentity(identity) {
+    if (this.state.oidcIdentities.has(identity.identityId) ||
+        await this.getOidcIdentityByIssuerSubject(identity.issuer, identity.subject)) {
+      throw new Error('fake repository duplicate OIDC identity')
+    }
+    if (!this.state.users.has(identity.userId)) throw new Error('fake repository OIDC identity user not found')
+    this.state.oidcIdentities.set(identity.identityId, copy(identity))
+  }
+
+  async updateOidcIdentity(identity, expectedRevision) {
+    const current = this.state.oidcIdentities.get(identity.identityId)
+    if (!current || current.userId !== identity.userId || current.issuer !== identity.issuer ||
+        current.subject !== identity.subject) {
+      throw new Error('fake repository immutable OIDC identity mismatch')
+    }
+    revisionUpdate(this.state.oidcIdentities, identity.identityId, identity, expectedRevision)
+  }
+
+  async getDeviceEnrollment(enrollmentId) {
+    return copy(this.state.deviceEnrollments.get(enrollmentId) ?? null)
+  }
+
+  async getDeviceEnrollmentForUpdate(enrollmentId) {
+    return this.getDeviceEnrollment(enrollmentId)
+  }
+
+  async insertDeviceEnrollment(enrollment) {
+    if (this.state.deviceEnrollments.has(enrollment.enrollmentId) ||
+        [...this.state.deviceEnrollments.values()].some((item) => item.nonceDigest === enrollment.nonceDigest)) {
+      throw new Error('fake repository duplicate Device enrollment')
+    }
+    if (!this.state.users.has(enrollment.userId)) throw new Error('fake repository Device enrollment user not found')
+    this.state.deviceEnrollments.set(enrollment.enrollmentId, copy(enrollment))
+  }
+
+  async consumeDeviceEnrollment(enrollmentId, consumedAt, expectedRevision) {
+    const enrollment = this.state.deviceEnrollments.get(enrollmentId)
+    if (!enrollment || enrollment.status !== 'pending' || enrollment.revision !== expectedRevision ||
+        enrollment.expiresAt <= consumedAt) return false
+    Object.assign(enrollment, {
+      status: 'consumed',
+      consumedAt,
+      updatedAt: consumedAt,
+      revision: enrollment.revision + 1
+    })
+    return true
+  }
+
+  async getDevice(deviceId) {
+    return copy(this.state.devices.get(deviceId) ?? null)
+  }
+
+  async getDeviceForUpdate(deviceId) {
+    return this.getDevice(deviceId)
+  }
+
+  async getDeviceByInstallation(installationId) {
+    return copy([...this.state.devices.values()].find((device) => device.installationId === installationId) ?? null)
+  }
+
+  async listDevicesForUser(userId) {
+    return copy([...this.state.devices.values()]
+      .filter((device) => device.userId === userId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.deviceId.localeCompare(right.deviceId)))
+  }
+
+  async insertDevice(device) {
+    if (this.state.devices.has(device.deviceId) || await this.getDeviceByInstallation(device.installationId)) {
+      throw new Error('fake repository duplicate Device identity')
+    }
+    if (!this.state.users.has(device.userId)) throw new Error('fake repository Device owner not found')
+    this.state.devices.set(device.deviceId, copy(device))
+  }
+
+  async updateDevice(device, expectedRevision) {
+    const current = this.state.devices.get(device.deviceId)
+    if (!current || current.userId !== device.userId || current.installationId !== device.installationId) {
+      throw new Error('fake repository immutable Device identity mismatch')
+    }
+    revisionUpdate(this.state.devices, device.deviceId, device, expectedRevision)
+  }
+
+  async getZulipBindingRequest(bindingRequestId) {
+    return copy(this.state.zulipBindingRequests.get(bindingRequestId) ?? null)
+  }
+
+  async getZulipBindingRequestByCodeDigest(codeDigest) {
+    return copy([...this.state.zulipBindingRequests.values()].find((request) => (
+      request.codeDigest === codeDigest
+    )) ?? null)
+  }
+
+  async getZulipBindingRequestByProviderEvent(providerEventId) {
+    return copy([...this.state.zulipBindingRequests.values()].find((request) => (
+      request.providerEventId === providerEventId
+    )) ?? null)
+  }
+
+  async getZulipBindingRequestForUpdate(bindingRequestId) {
+    return this.getZulipBindingRequest(bindingRequestId)
+  }
+
+  async getZulipBindingRequestByCodeDigestForUpdate(codeDigest) {
+    return this.getZulipBindingRequestByCodeDigest(codeDigest)
+  }
+
+  async insertZulipBindingRequest(request) {
+    const duplicate = this.state.zulipBindingRequests.has(request.bindingRequestId) ||
+      await this.getZulipBindingRequestByCodeDigest(request.codeDigest) ||
+      (request.providerEventId && await this.getZulipBindingRequestByProviderEvent(request.providerEventId)) ||
+      [...this.state.zulipBindingRequests.values()].some((item) => (
+        item.userId === request.userId && item.realmUrl === request.realmUrl && item.status === 'pending'
+      ))
+    if (duplicate) throw new Error('fake repository duplicate Zulip binding request')
+    if (!this.state.users.has(request.userId)) throw new Error('fake repository binding User not found')
+    this.state.zulipBindingRequests.set(request.bindingRequestId, copy(request))
+  }
+
+  async updateZulipBindingRequest(request, expectedRevision) {
+    const current = this.state.zulipBindingRequests.get(request.bindingRequestId)
+    if (!current || current.userId !== request.userId || current.realmUrl !== request.realmUrl ||
+        current.codeDigest !== request.codeDigest) {
+      throw new Error('fake repository immutable Zulip binding request mismatch')
+    }
+    if (request.providerEventId && [...this.state.zulipBindingRequests.values()].some((item) => (
+      item.bindingRequestId !== request.bindingRequestId && item.providerEventId === request.providerEventId
+    ))) throw new Error('fake repository duplicate provider event')
+    revisionUpdate(this.state.zulipBindingRequests, request.bindingRequestId, request, expectedRevision)
+  }
+
+  async expirePendingZulipBindingRequests(userId, realmUrl, expiredAt) {
+    let updated = 0
+    for (const request of this.state.zulipBindingRequests.values()) {
+      if (request.userId === userId && request.realmUrl === realmUrl && request.status === 'pending') {
+        request.status = 'expired'
+        request.revision += 1
+        request.updatedAt = expiredAt
+        updated += 1
+      }
+    }
+    return updated
   }
 
   async insertChallenge(challenge) {
@@ -354,8 +570,37 @@ export class FakeCollaborationRepository {
 
   async getEndpointByProviderIdentity(provider, realmId, providerUserId) {
     return copy([...this.state.endpoints.values()].find((item) => (
-      item.provider === provider && item.realmId === realmId && item.providerUserId === providerUserId
+      item.provider === provider && item.realmId === realmId && item.providerUserId === providerUserId &&
+      item.status === 'active'
     )) ?? null)
+  }
+
+  async getExternalIdentity(externalIdentityId) {
+    const endpoint = [...this.state.endpoints.values()].find((item) => (
+      item.externalIdentityId === externalIdentityId
+    ))
+    return externalIdentityFromEndpoint(endpoint)
+  }
+
+  async getExternalIdentityByProviderIdentity(realmId, zulipUserId) {
+    const endpoint = [...this.state.endpoints.values()].find((item) => (
+      item.externalIdentityId && item.provider === 'zulip' && item.realmId === realmId &&
+      item.providerUserId === zulipUserId && item.status === 'active'
+    ))
+    return externalIdentityFromEndpoint(endpoint)
+  }
+
+  async listExternalIdentitiesForUser(userId) {
+    return [...this.state.endpoints.values()]
+      .filter((endpoint) => endpoint.externalIdentityId && endpoint.provider === 'zulip' && endpoint.userId === userId)
+      .map(externalIdentityFromEndpoint)
+      .filter(Boolean)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) ||
+        left.externalIdentityId.localeCompare(right.externalIdentityId))
+  }
+
+  async getExternalIdentityForUpdate(externalIdentityId) {
+    return this.getExternalIdentity(externalIdentityId)
   }
 
   async insertEndpoint(endpoint) {
@@ -364,7 +609,38 @@ export class FakeCollaborationRepository {
   }
 
   async updateEndpoint(endpoint, expectedRevision) {
+    if (this.state.endpoints.get(endpoint.humanEndpointId)?.externalIdentityId) {
+      throw new Error('fake repository external identity requires the dedicated update path')
+    }
     revisionUpdate(this.state.endpoints, endpoint.humanEndpointId, endpoint, expectedRevision)
+  }
+
+  async insertExternalIdentity(identity) {
+    if (await this.getExternalIdentity(identity.externalIdentityId) || this.state.endpoints.has(identity.humanEndpointId)) {
+      throw new Error('fake repository duplicate external identity')
+    }
+    const providerConflict = [...this.state.endpoints.values()].some((endpoint) => (
+      endpoint.provider === 'zulip' && endpoint.status === 'active' &&
+      endpoint.realmId === identity.realmId && endpoint.providerUserId === identity.zulipUserId
+    ))
+    const userRealmConflict = [...this.state.endpoints.values()].some((endpoint) => (
+      endpoint.provider === 'zulip' && endpoint.status === 'active' &&
+      endpoint.userId === identity.userId && endpoint.realmId === identity.realmId
+    ))
+    if (providerConflict || userRealmConflict) throw new Error('fake repository active external identity conflict')
+    if (!this.state.users.has(identity.userId)) throw new Error('fake repository external identity User not found')
+    this.state.endpoints.set(identity.humanEndpointId, endpointFromExternalIdentity(identity))
+  }
+
+  async updateExternalIdentity(identity, expectedRevision) {
+    const current = [...this.state.endpoints.values()].find((endpoint) => (
+      endpoint.externalIdentityId === identity.externalIdentityId
+    ))
+    if (!current || current.userId !== identity.userId || current.realmId !== identity.realmId ||
+        current.providerUserId !== identity.zulipUserId || current.humanEndpointId !== identity.humanEndpointId) {
+      throw new Error('fake repository immutable external identity mismatch')
+    }
+    revisionUpdate(this.state.endpoints, current.humanEndpointId, endpointFromExternalIdentity(identity), expectedRevision)
   }
 
   async getAgent(agentId) {
@@ -377,11 +653,29 @@ export class FakeCollaborationRepository {
 
   async insertAgent(agent) {
     if (this.state.agents.has(agent.agentId)) throw new Error('fake repository duplicate agent')
+    if (agent.status === 'active' && !agent.deviceId) throw new Error('fake repository ACTIVE Agent requires Device')
+    if (agent.deviceId) {
+      const device = this.state.devices.get(agent.deviceId)
+      if (!device || device.userId !== agent.ownerUserId) throw new Error('fake repository Agent/Device owner mismatch')
+    }
     this.state.agents.set(agent.agentId, copy(agent))
   }
 
   async updateAgent(agent, expectedRevision) {
+    const current = this.state.agents.get(agent.agentId)
+    if (agent.status === 'active' && !agent.deviceId) throw new Error('fake repository ACTIVE Agent requires Device')
+    if (agent.deviceId) {
+      const device = this.state.devices.get(agent.deviceId)
+      if (!device || device.userId !== agent.ownerUserId) throw new Error('fake repository Agent/Device owner mismatch')
+    }
     revisionUpdate(this.state.agents, agent.agentId, agent, expectedRevision)
+    if (current && current.ownerUserId !== agent.ownerUserId) {
+      for (const task of this.state.tasks.values()) {
+        if (task.assigneeAgentId === agent.agentId && task.assigneeUserId === current.ownerUserId) {
+          task.assigneeUserId = agent.ownerUserId
+        }
+      }
+    }
   }
 
   async insertCredential(credential) {
@@ -414,6 +708,21 @@ export class FakeCollaborationRepository {
     return updated
   }
 
+  async revokeAgentCredentialsForDevice(deviceId, revokedAt) {
+    const agentIds = new Set([...this.state.agents.values()]
+      .filter((agent) => agent.deviceId === deviceId)
+      .map((agent) => agent.agentId))
+    let updated = 0
+    for (const credential of this.state.credentials.values()) {
+      if (credential.kind === 'agent_device' && credential.subjectAgentId &&
+          agentIds.has(credential.subjectAgentId) && !credential.revokedAt) {
+        credential.revokedAt = revokedAt
+        updated += 1
+      }
+    }
+    return updated
+  }
+
   async getParticipant(userId) {
     return copy(this.state.participants.get(userId) ?? null)
   }
@@ -424,6 +733,28 @@ export class FakeCollaborationRepository {
 
   async listAgentsForUser(userId) {
     return copy([...this.state.agents.values()].filter((item) => item.ownerUserId === userId))
+  }
+
+  async listAgentsForDevice(deviceId) {
+    return copy([...this.state.agents.values()].filter((item) => item.deviceId === deviceId))
+  }
+
+  async getAgentCapabilityProfile(agentId) {
+    return copy(this.state.capabilityProfiles.get(agentId) ?? null)
+  }
+
+  async upsertAgentCapabilityProfile(profile, expectedRevision) {
+    const current = this.state.capabilityProfiles.get(profile.agentId)
+    if (expectedRevision === null) {
+      if (current) throw new Error('fake repository duplicate capability profile')
+    } else if (!current || current.revision !== expectedRevision) {
+      throw new Error('fake repository capability profile revision conflict')
+    }
+    this.state.capabilityProfiles.set(profile.agentId, copy(profile))
+  }
+
+  async deleteAgentCapabilityProfile(agentId) {
+    this.state.capabilityProfiles.delete(agentId)
   }
 
   async upsertParticipant(participant, expectedRevision) {
@@ -502,6 +833,10 @@ export class FakeCollaborationRepository {
     return copy(this.state.humanRequests.get(humanRequestId) ?? null)
   }
 
+  async getHumanRequestForUpdate(humanRequestId) {
+    return this.getHumanRequest(humanRequestId)
+  }
+
   async listPendingHumanRequestsForTaskForUpdate(taskId) {
     return copy([...this.state.humanRequests.values()]
       .filter((request) => request.taskId === taskId && request.status === 'pending')
@@ -522,9 +857,45 @@ export class FakeCollaborationRepository {
     return copy([...this.state.humanAnswers.values()].find((item) => item.humanRequestId === humanRequestId) ?? null)
   }
 
+  async listHumanRequestsForProject(projectId) {
+    return copy([...this.state.humanRequests.values()].filter((item) => item.projectId === projectId))
+  }
+
+  async listHumanAnswersForProject(projectId) {
+    return copy([...this.state.humanAnswers.values()].filter((item) => item.projectId === projectId))
+  }
+
   async insertHumanAnswer(answer) {
     if (this.state.humanAnswers.has(answer.humanAnswerId)) throw new Error('fake repository duplicate human answer')
     this.state.humanAnswers.set(answer.humanAnswerId, copy(answer))
+  }
+
+  async getActionConfirmation(confirmationId) {
+    return copy(this.state.actionConfirmations.get(confirmationId) ?? null)
+  }
+
+  async getActionConfirmationForUpdate(confirmationId) {
+    return this.getActionConfirmation(confirmationId)
+  }
+
+  async listApprovedActionConfirmationsForProjectForUpdate(projectId) {
+    return copy([...this.state.actionConfirmations.values()]
+      .filter((confirmation) => confirmation.projectId === projectId && confirmation.status === 'approved')
+      .sort((left, right) => left.confirmationId.localeCompare(right.confirmationId)))
+  }
+
+  async insertActionConfirmation(confirmation) {
+    if (this.state.actionConfirmations.has(confirmation.confirmationId)) {
+      throw new Error('fake repository duplicate action confirmation')
+    }
+    this.state.actionConfirmations.set(confirmation.confirmationId, copy(confirmation))
+  }
+
+  async updateActionConfirmation(confirmation) {
+    const current = this.state.actionConfirmations.get(confirmation.confirmationId)
+    if (!current) throw new Error('fake repository missing action confirmation')
+    if (current.status !== 'approved') throw new Error('fake repository terminal action confirmation is immutable')
+    this.state.actionConfirmations.set(confirmation.confirmationId, copy(confirmation))
   }
 
   async getProject(projectId) {
@@ -577,8 +948,16 @@ export class FakeCollaborationRepository {
     return copy(this.state.tasks.get(taskId) ?? null)
   }
 
+  async listProjectTasks(projectId) {
+    return copy([...this.state.tasks.values()].filter((item) => item.projectId === projectId))
+  }
+
   async getProjectForUpdate(projectId) {
     return copy(this.state.projects.get(projectId) ?? null)
+  }
+
+  async getAgentForUpdate(agentId) {
+    return copy(this.state.agents.get(agentId) ?? null)
   }
 
   async getTaskForUpdate(taskId) {
@@ -602,6 +981,16 @@ export class FakeCollaborationRepository {
     return copy([...this.state.projectRecords.values()].filter((item) => (
       item.projectId === projectId && (!acceptedOnly || item.status === 'accepted')
     )))
+  }
+
+  async getTaskResultForExecution(taskId, executionId) {
+    return copy([...this.state.projectRecords.values()].find((item) => (
+      item.kind === 'task_result' && item.sourceTaskId === taskId && item.sourceExecutionId === executionId
+    )) ?? null)
+  }
+
+  async getTaskResultForExecutionForUpdate(taskId, executionId) {
+    return this.getTaskResultForExecution(taskId, executionId)
   }
 
   async insertProjectRecord(record) {
@@ -629,15 +1018,27 @@ export class FakeCollaborationRepository {
   async appendInbox(message) {
     const key = recipientKey(message.recipient)
     const inbox = this.state.inboxes.get(key) ?? []
-    const stored = { ...copy(message), sequence: inbox.length + 1 }
+    const cursor = this.state.inboxCursors.get(key) ?? {
+      recipient: copy(message.recipient),
+      nextSequence: 1,
+      ackedSequence: 0,
+      updatedAt: message.createdAt
+    }
+    const stored = { disposition: 'active', ...copy(message), sequence: cursor.nextSequence }
     inbox.push(stored)
     this.state.inboxes.set(key, inbox)
+    this.state.inboxCursors.set(key, {
+      ...cursor,
+      nextSequence: stored.sequence + 1,
+      updatedAt: message.createdAt
+    })
     return copy(stored)
   }
 
   async pullInbox(recipient, afterSequence, limit, now) {
     return copy((this.state.inboxes.get(recipientKey(recipient)) ?? [])
-      .filter((item) => item.sequence > afterSequence && item.expiresAt > now)
+      .filter((item) => item.sequence > afterSequence &&
+        (item.expiresAt > now || item.disposition === 'superseded'))
       .slice(0, limit))
   }
 
@@ -645,15 +1046,54 @@ export class FakeCollaborationRepository {
     return copy(this.state.inboxCursors.get(recipientKey(recipient)) ?? null)
   }
 
+
+  async getInboxMessage(recipient, sequence) {
+    return copy((this.state.inboxes.get(recipientKey(recipient)) ?? [])
+      .find((item) => item.sequence === sequence) ?? null)
+  }
+
+  async getInboxMessageById(recipient, messageId) {
+    return copy((this.state.inboxes.get(recipientKey(recipient)) ?? [])
+      .find((item) => item.messageId === messageId) ?? null)
+  }
+
+  async supersedeCoordinatorInbox(projectId, recipientAgentId, supersededAt) {
+    const key = recipientKey({ kind: 'agent', id: recipientAgentId })
+    const cursor = this.state.inboxCursors.get(key)
+    const changed = []
+    const coordinatorTypes = new Set(['task.updated', 'project_record.submitted', 'project.input.received',
+      'project.endpoint.updated', 'project.started', 'human.answer.received'])
+    for (const message of this.state.inboxes.get(key) ?? []) {
+      if (message.sequence <= (cursor?.ackedSequence ?? 0) || message.disposition === 'superseded') continue
+      const messageProjectId = message.payload?.projectId ?? message.payload?.answer?.projectId
+      if (messageProjectId !== projectId || !coordinatorTypes.has(message.messageType)) continue
+      message.disposition = 'superseded'
+      message.supersededAt = supersededAt
+      changed.push(copy(message))
+    }
+    return changed
+  }
+
   async ackInbox(recipient, throughSequence, updatedAt) {
     const key = recipientKey(recipient)
     const inbox = this.state.inboxes.get(key) ?? []
     const current = this.state.inboxCursors.get(key)
     const latestSequence = inbox.at(-1)?.sequence ?? 0
+    const currentAck = current?.ackedSequence ?? 0
+    if (throughSequence > currentAck) {
+      const target = inbox.find((item) => item.sequence === throughSequence)
+      if (!target) throw new Error('fake repository inbox message not found')
+      for (let sequence = currentAck + 1; sequence < throughSequence; sequence += 1) {
+        const skipped = inbox.find((item) => item.sequence === sequence)
+        if (!skipped || skipped.disposition !== 'superseded') {
+          throw new Error('fake repository inbox ack gap')
+        }
+      }
+    }
     const cursor = {
       recipient: copy(recipient),
       nextSequence: latestSequence + 1,
-      ackedSequence: Math.max(current?.ackedSequence ?? 0, Math.min(throughSequence, latestSequence)),
+      ackedSequence: Math.max(currentAck, Math.min(throughSequence, latestSequence)),
       updatedAt
     }
     this.state.inboxCursors.set(key, cursor)
@@ -678,9 +1118,49 @@ export class FakeCollaborationRepository {
     let inboxMessages = 0
     let receipts = 0
     let challenges = 0
+    let humanRequests = 0
+    for (const enrollment of this.state.deviceEnrollments.values()) {
+      if (enrollment.status === 'pending' && enrollment.expiresAt <= now) {
+        enrollment.status = 'expired'
+        enrollment.revision += 1
+        enrollment.updatedAt = now
+      }
+    }
+    for (const request of this.state.zulipBindingRequests.values()) {
+      if (request.status === 'pending' && request.expiresAt <= now) {
+        request.status = 'expired'
+        request.revision += 1
+        request.updatedAt = now
+      }
+    }
+    for (const request of this.state.humanRequests.values()) {
+      if (request.status === 'pending' && request.expiresAt <= now) {
+        request.status = 'expired'
+        request.revision += 1
+        request.updatedAt = now
+        humanRequests += 1
+      }
+    }
+    for (const confirmation of this.state.actionConfirmations.values()) {
+      if (confirmation.status === 'approved' && confirmation.expiresAt <= now) {
+        confirmation.status = 'superseded'
+        confirmation.updatedAt = now
+      }
+    }
     for (const [key, inbox] of this.state.inboxes) {
-      const retained = inbox.filter((item) => item.expiresAt > now)
-      inboxMessages += inbox.length - retained.length
+      const acked = this.state.inboxCursors.get(key)?.ackedSequence ?? 0
+      const retained = []
+      for (const item of inbox) {
+        if (item.expiresAt <= now && item.sequence <= acked) {
+          inboxMessages += 1
+          continue
+        }
+        if (item.expiresAt <= now && item.disposition !== 'superseded') {
+          item.disposition = 'superseded'
+          item.supersededAt = now
+        }
+        retained.push(item)
+      }
       this.state.inboxes.set(key, retained)
     }
     for (const [key, receipt] of this.state.receipts) {
@@ -695,7 +1175,7 @@ export class FakeCollaborationRepository {
         challenges += 1
       }
     }
-    return { inboxMessages, receipts, challenges }
+    return { inboxMessages, receipts, challenges, humanRequests }
   }
 
   async close() {

@@ -65,7 +65,6 @@ type ProviderRuntimePersistence = Pick<ProviderRuntimeStore,
 >
 
 type ProviderRuntimeService = Pick<CollaborationService,
-  | 'verifyPairingFromProvider'
   | 'acceptPersonalProviderMessage'
   | 'acceptProjectInput'
   | 'answerHumanNeeded'
@@ -84,7 +83,6 @@ export type ProviderRuntimeOptions = Readonly<{
   service: ProviderRuntimeService
   repository: ProviderRuntimeRepository
   authentication: ProviderRuntimeAuthentication
-  pairingAssurance?: Readonly<Record<string, 'verified' | 'strong'>>
   now?: () => Date
   outboxPollMs?: number
 }>
@@ -95,7 +93,6 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
   private readonly service: ProviderRuntimeService
   private readonly repository: ProviderRuntimeRepository
   private readonly authentication: ProviderRuntimeAuthentication
-  private readonly pairingAssurance: Readonly<Record<string, 'verified' | 'strong'>>
   private readonly now: () => Date
   private readonly outboxPollMs: number
   private readonly pumpTasks = new Set<Promise<void>>()
@@ -111,7 +108,6 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
     this.service = options.service
     this.repository = options.repository
     this.authentication = options.authentication
-    this.pairingAssurance = options.pairingAssurance ?? {}
     this.now = options.now ?? (() => new Date())
     this.outboxPollMs = Math.max(250, Math.min(options.outboxPollMs ?? DEFAULT_OUTBOX_POLL_MS, 60_000))
   }
@@ -231,7 +227,7 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
       if (event.type === 'provider.message.created') {
         await this.handleMessageCreated(event, claimEventId)
       } else if (event.type === 'provider.challenge.responded') {
-        await this.handleChallengeResponded(event, claimEventId)
+        await this.rejectLegacyProviderChallenge()
       } else if (event.type === 'provider.human_answer.responded') {
         await this.handleHumanAnswerResponded(event, claimEventId)
       } else if (event.type === 'provider.locator.changed') {
@@ -303,26 +299,9 @@ export class DefaultCollaborationProviderRuntime implements CollaborationProvide
     })
   }
 
-  private async handleChallengeResponded(
-    event: Extract<ProviderEvent, { type: 'provider.challenge.responded' }>,
-    claimEventId: string
-  ): Promise<void> {
-    try {
-      await this.service.verifyPairingFromProvider({
-        provider: event.identity.provider,
-        realmId: event.identity.realmId,
-        providerUserId: event.identity.providerUserId,
-        ...(event.identity.displayName === undefined ? {} : { providerDisplayName: event.identity.displayName }),
-        challengeId: event.challengeId,
-        challengeCode: event.challengeResponse,
-        providerEventId: claimEventId,
-        assurance: this.pairingAssurance[event.provider] ?? 'verified'
-      })
-    } catch (error) {
-      if (error instanceof CollaborationServiceError &&
-          ['not_found', 'request_expired', 'validation_failed'].includes(error.code)) return
-      throw error
-    }
+  private rejectLegacyProviderChallenge(): never {
+    throw new CollaborationServiceError('permission_denied',
+      'Legacy Provider identity challenges are disabled; binding confirmation requires a trusted service actor boundary.')
   }
 
   private async handleHumanAnswerResponded(
@@ -463,17 +442,15 @@ export async function createInstalledProviderRuntime(input: Readonly<{
 }>): Promise<CollaborationProviderRuntime> {
   const now = input.now ?? (() => new Date())
   const store = new ProviderRuntimeStore(input.pool, now)
-  const assurances: Record<string, 'verified' | 'strong'> = {}
   const services = new Map<string, HumanEndpointProviderServices>()
   const providers = await createInstalledHumanEndpointProviders((definition) => {
     const configuration = input.configuration.providers[definition.provider]
     if (!configuration) {
       throw new CollaborationServiceError('resource_offline', `Installed provider ${definition.provider} has no non-sensitive configuration.`)
     }
-    assurances[definition.provider] = pairingAssurance(configuration)
     let providerServices = services.get(definition.provider)
     if (!providerServices) {
-      providerServices = createProviderServices({ definition, store, service: input.service, now })
+      providerServices = createProviderServices({ definition, store })
       services.set(definition.provider, providerServices)
     }
     return {
@@ -490,7 +467,6 @@ export async function createInstalledProviderRuntime(input: Readonly<{
     service: input.service,
     repository: input.repository,
     authentication: input.authentication,
-    pairingAssurance: assurances,
     now
   })
 }
@@ -571,8 +547,6 @@ export class FileProviderSecretReader implements HumanEndpointProviderSecretRead
 function createProviderServices(input: Readonly<{
   definition: InstalledHumanEndpointProviderDefinition
   store: ProviderRuntimeStore
-  service: CollaborationService
-  now: () => Date
 }>): HumanEndpointProviderServices {
   const { definition, store } = input
   return {
@@ -588,7 +562,7 @@ function createProviderServices(input: Readonly<{
       return current?.result.type === 'provider.send.succeeded' ? current.result : undefined
     },
     recordDelivery: (clientMessageId, result) => store.recordDelivery(definition.provider, clientMessageId, result),
-    verifyChallenge: (request) => verifyChallenge(input.service, request, definition.provider),
+    verifyChallenge: rejectLegacyProviderChallenge,
     http: providerHttp,
     reportDiagnostic: (diagnostic) => {
       void store.recordDiagnostic(diagnostic).catch(() => undefined)
@@ -596,40 +570,10 @@ function createProviderServices(input: Readonly<{
   }
 }
 
-async function verifyChallenge(
-  service: CollaborationService,
-  request: ProviderVerifyIdentityRequest,
-  provider: string
+async function rejectLegacyProviderChallenge(
+  _request: ProviderVerifyIdentityRequest
 ): Promise<ProviderVerifyIdentityResult> {
-  try {
-    const result = await service.verifyPairingFromProvider({
-      provider,
-      realmId: request.expectedIdentity.realmId,
-      providerUserId: request.expectedIdentity.providerUserId,
-      ...(request.expectedIdentity.displayName === undefined ? {} : { providerDisplayName: request.expectedIdentity.displayName }),
-      challengeId: request.challengeId,
-      challengeCode: request.challengeResponse,
-      providerEventId: `identity-verification:${request.challengeId}`,
-      assurance: 'verified'
-    })
-    if (result.challengeId !== request.challengeId) {
-      return { protocolVersion: CURRENT_PROTOCOL_VERSION, type: 'provider.identity.rejected', reason: 'invalid' }
-    }
-    return {
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-      type: 'provider.identity.verified',
-      identity: request.expectedIdentity,
-      assurance: 'verified',
-      verifiedAt: timestamp(() => new Date())
-    }
-  } catch (error) {
-    const reason = error instanceof CollaborationServiceError && error.code === 'request_expired'
-      ? 'expired'
-      : error instanceof CollaborationServiceError && error.code === 'identity_conflict'
-        ? 'identity_mismatch'
-        : 'invalid'
-    return { protocolVersion: CURRENT_PROTOCOL_VERSION, type: 'provider.identity.rejected', reason }
-  }
+  return { protocolVersion: CURRENT_PROTOCOL_VERSION, type: 'provider.identity.rejected', reason: 'invalid' }
 }
 
 async function providerHttp(request: HumanEndpointProviderHttpRequest): Promise<HumanEndpointProviderHttpResponse> {
@@ -732,13 +676,6 @@ function endpointActor(endpoint: StoredEndpoint): HumanEndpointActor {
 function deliveryAttemptDue(delivery: ProviderDeliveryState, now: string): boolean {
   if (delivery.terminal) return false
   return delivery.nextAttemptAt === undefined || delivery.nextAttemptAt <= now
-}
-
-function pairingAssurance(configuration: Readonly<Record<string, string | number | boolean>>): 'verified' | 'strong' {
-  const value = configuration.pairingAssurance
-  if (value === undefined || value === 'verified') return 'verified'
-  if (value === 'strong') return 'strong'
-  throw new CollaborationServiceError('validation_failed', 'Provider pairingAssurance must be verified or strong.')
 }
 
 function looksLikeInlineSecret(key: string): boolean {

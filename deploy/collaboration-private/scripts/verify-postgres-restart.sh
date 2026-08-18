@@ -8,9 +8,33 @@ source "$SCRIPT_DIR/common.sh"
 
 expected_commit="${1:-}"
 env_input="${2:-}"
-confirmation="${3:-}"
-[[ -n "$expected_commit" && -n "$env_input" && "$confirmation" == --confirm-postgres-restart ]] \
-  || die "Usage: verify-postgres-restart.sh <approved-40-character-contract-commit> <env-file> --confirm-postgres-restart"
+acceptance_mode=provider-zulip
+confirmation_seen=false
+mode_seen=false
+for argument in "${@:3}"; do
+  case "$argument" in
+    --confirm-postgres-restart)
+      [[ "$confirmation_seen" == false ]] \
+        || die "--confirm-postgres-restart may only be provided once."
+      confirmation_seen=true
+      ;;
+    --core-only)
+      [[ "$mode_seen" == false ]] || die "Only one PostgreSQL restart acceptance mode may be selected."
+      acceptance_mode=core-only
+      mode_seen=true
+      ;;
+    --provider-zulip)
+      [[ "$mode_seen" == false ]] || die "Only one PostgreSQL restart acceptance mode may be selected."
+      acceptance_mode=provider-zulip
+      mode_seen=true
+      ;;
+    *)
+      die "Usage: verify-postgres-restart.sh <approved-40-character-contract-commit> <env-file> --confirm-postgres-restart [--core-only|--provider-zulip]"
+      ;;
+  esac
+done
+[[ -n "$expected_commit" && -n "$env_input" && "$confirmation_seen" == true ]] \
+  || die "Usage: verify-postgres-restart.sh <approved-40-character-contract-commit> <env-file> --confirm-postgres-restart [--core-only|--provider-zulip]"
 
 for command in docker curl grep stat sha256sum tar awk sort date mktemp chmod rm sleep; do
   require_command "$command"
@@ -18,7 +42,9 @@ done
 docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is unavailable."
 validate_release_bundle "$expected_commit"
 prepare_compose_environment "$expected_commit" "$env_input"
-enable_zulip_provider_compose
+if [[ "$acceptance_mode" == provider-zulip ]]; then
+  enable_zulip_provider_compose
+fi
 "${COMPOSE[@]}" config --quiet
 
 running_services="$("${COMPOSE[@]}" ps --status running --services)"
@@ -44,20 +70,22 @@ running_contract_commit="$("${COMPOSE[@]}" exec -T app sh -c 'tr -d "\r\n" < /ap
   || die "Running application does not match the approved restart-acceptance commit."
 provider_mode="$(docker container inspect --format \
   '{{index .Config.Labels "cn.sciforge.deployment.mode"}}' "$app_container_before")"
-[[ "$provider_mode" == zulip-provider-private ]] \
-  || die "PostgreSQL restart acceptance requires the explicit Zulip provider deployment."
-config_mount_rw="$(docker container inspect --format \
-  '{{range .Mounts}}{{if eq .Destination "/run/sciforge-provider/config/providers.json"}}{{.RW}}{{end}}{{end}}' \
-  "$app_container_before")"
-secret_mount_rw="$(docker container inspect --format \
-  '{{range .Mounts}}{{if eq .Destination "/run/sciforge-provider/secrets"}}{{.RW}}{{end}}{{end}}' \
-  "$app_container_before")"
-[[ "$config_mount_rw" == false && "$secret_mount_rw" == false ]] \
-  || die "Provider config and secret mounts must both be present and read-only."
+if [[ "$acceptance_mode" == provider-zulip ]]; then
+  config_mount_rw="$(docker container inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/run/sciforge-provider/config/providers.json"}}{{.RW}}{{end}}{{end}}' \
+    "$app_container_before")"
+  secret_mount_rw="$(docker container inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/run/sciforge-provider/secrets"}}{{.RW}}{{end}}{{end}}' \
+    "$app_container_before")"
+  [[ "$provider_mode" == zulip-provider-private ]] \
+    || die "PostgreSQL restart acceptance requires the explicit Zulip provider deployment."
+  [[ "$config_mount_rw" == false && "$secret_mount_rw" == false ]] \
+    || die "Provider config and secret mounts must both be present and read-only."
 
-# This checks the public catalog only. It deliberately does not read or print
-# provider configuration, secrets, or diagnostic details.
-"${COMPOSE[@]}" exec -T app node --input-type=module - <<'NODE'
+  # This checks the public catalog only. It deliberately does not read or print
+  # provider configuration, secrets, or diagnostic details. Keep this exact
+  # Zulip gate independent from the core-only acceptance path.
+  "${COMPOSE[@]}" exec -T app node --input-type=module - <<'NODE'
 import { randomUUID } from 'node:crypto'
 
 const response = await fetch('http://127.0.0.1:8787/v1/commands', {
@@ -78,6 +106,55 @@ if (response.status !== 200 || body?.type !== 'endpoint.catalog' ||
 }
 console.log('Provider catalog verification passed: exactly zulip.')
 NODE
+  boundary_summary='the Zulip provider boundary remained active'
+else
+  [[ "$provider_mode" == core-only-private ]] \
+    || die "Core-only PostgreSQL restart acceptance requires the core-only private deployment."
+  provider_env_key_count="$(docker container inspect --format \
+    '{{range .Config.Env}}{{println .}}{{end}}' "$app_container_before" \
+    | awk -F= '
+        $1 == "SCIFORGE_COLLABORATION_PROVIDER_CONFIG_FILE" ||
+        $1 == "SCIFORGE_COLLABORATION_SECRET_DIRECTORY" { count += 1 }
+        END { print count + 0 }
+      ')"
+  [[ "$provider_env_key_count" == 0 ]] \
+    || die "Core-only app Config.Env must not contain Provider configuration keys, including empty values."
+  provider_mount_violation_count="$(docker container inspect --format \
+    '{{range .Mounts}}{{println .Destination}}{{end}}' "$app_container_before" \
+    | awk '
+        BEGIN { target = "/run/sciforge-provider" }
+        $0 == "/" || $0 == target || index($0, target "/") == 1 || index(target, $0 "/") == 1 {
+          count += 1
+        }
+        END { print count + 0 }
+      ')"
+  [[ "$provider_mount_violation_count" == 0 ]] \
+    || die "Core-only app must not mount at, below, or above the /run/sciforge-provider tree."
+
+  # Core-only proves that no Human Provider was injected. This is a separate,
+  # fail-closed branch and does not weaken the provider-enabled exact-Zulip gate.
+  "${COMPOSE[@]}" exec -T app node --input-type=module - <<'NODE'
+import { randomUUID } from 'node:crypto'
+
+const response = await fetch('http://127.0.0.1:8787/v1/commands', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    protocolVersion: '1.0',
+    requestId: `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+    type: 'endpoint.catalog.get'
+  })
+})
+const body = await response.json().catch(() => null)
+if (response.status !== 200 || body?.type !== 'endpoint.catalog' ||
+    !Array.isArray(body.providers) || body.providers.length !== 0) {
+  console.error('Core-only provider catalog verification failed.')
+  process.exit(1)
+}
+console.log('Core-only provider catalog verification passed: empty catalog.')
+NODE
+  boundary_summary='the core-only Provider boundary remained empty'
+fi
 
 app_pid_before="$(docker container inspect --format '{{.State.Pid}}' "$app_container_before")"
 postgres_pid_before="$(docker container inspect --format '{{.State.Pid}}' "$postgres_container_before")"
@@ -196,4 +273,4 @@ printf 'sensitive_log_pattern_count=%s\n' "$sensitive_log_pattern_count"
 (( sensitive_log_pattern_count == 0 )) \
   || die "Sensitive log patterns were detected; matching log content is intentionally suppressed."
 
-echo "PostgreSQL restart acceptance passed: the Zulip provider boundary remained active, app PID/RestartCount stayed fixed, liveness stayed up, readiness failed then recovered, rows matched, and safe 57P0x diagnostics were counted without printing log lines."
+echo "PostgreSQL restart acceptance passed: $boundary_summary, app PID/RestartCount stayed fixed, liveness stayed up, readiness failed then recovered, rows matched, and safe 57P0x diagnostics were counted without printing log lines."

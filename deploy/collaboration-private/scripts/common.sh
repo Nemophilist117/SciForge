@@ -89,6 +89,76 @@ bundle_contract_commit() {
   printf '%s' "$commit"
 }
 
+consume_postgres_v5_attestation() {
+  local candidate_image_id="$1"
+  local expected_commit="$2"
+  local attestation_path=/run/sciforge-collaboration-private-postgres-v5.attestation
+  local claimed_path="${attestation_path}.claimed.$$"
+  local lines=()
+  local release_manifest_digest
+  local bundle_sums_digest
+  local bundle_commit_digest
+  local runner_script_digest
+  local verifier_script_digest
+  local verified_epoch
+  local verified_utc
+  local now_epoch
+  local expected_utc
+
+  validate_commit "$expected_commit"
+  [[ "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "The PostgreSQL v5 attestation candidate image ID is invalid."
+  [[ -f "$attestation_path" && ! -L "$attestation_path" \
+      && "$(stat -c '%u:%g:%a' "$attestation_path")" == 0:0:600 ]] \
+    || die "A root-only PostgreSQL v5 integration attestation is required before deployment."
+  [[ ! -e "$claimed_path" && ! -L "$claimed_path" ]] \
+    || die "The PostgreSQL v5 attestation claim path already exists."
+  mv -- "$attestation_path" "$claimed_path"
+  [[ -f "$claimed_path" && ! -L "$claimed_path" \
+      && "$(stat -c '%u:%g:%a' "$claimed_path")" == 0:0:600 ]] \
+    || die "The claimed PostgreSQL v5 attestation is unsafe."
+
+  mapfile -t lines < "$claimed_path"
+  (( ${#lines[@]} == 11 )) \
+    || die "The PostgreSQL v5 attestation has an invalid field set."
+  [[ "${lines[0]}" == schemaVersion=1 \
+      && "${lines[1]}" == status=passed \
+      && "${lines[2]}" == "contractCommit=$expected_commit" \
+      && "${lines[3]}" == "candidateImageId=$candidate_image_id" \
+      && "${lines[4]}" =~ ^releaseManifestSha256=[0-9a-f]{64}$ \
+      && "${lines[5]}" =~ ^bundleSumsSha256=[0-9a-f]{64}$ \
+      && "${lines[6]}" =~ ^bundleCommitSha256=[0-9a-f]{64}$ \
+      && "${lines[7]}" =~ ^runnerScriptSha256=[0-9a-f]{64}$ \
+      && "${lines[8]}" =~ ^verifierScriptSha256=[0-9a-f]{64}$ \
+      && "${lines[9]}" =~ ^verifiedEpoch=[0-9]{10,}$ \
+      && "${lines[10]}" =~ ^verifiedAtUtc=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || die "The PostgreSQL v5 attestation is malformed or belongs to another candidate."
+
+  release_manifest_digest="$(sha256sum "$BUNDLE_DIR/RELEASE_MANIFEST.json" | awk '{print $1}')"
+  bundle_sums_digest="$(sha256sum "$BUNDLE_DIR/SHA256SUMS" | awk '{print $1}')"
+  bundle_commit_digest="$(sha256sum "$BUNDLE_DIR/CONTRACT_COMMIT" | awk '{print $1}')"
+  runner_script_digest="$(sha256sum "$COMMON_SCRIPT_DIR/postgres-v5-integration.mjs" | awk '{print $1}')"
+  verifier_script_digest="$(sha256sum "$COMMON_SCRIPT_DIR/verify-postgres-v5-integration.sh" | awk '{print $1}')"
+  [[ "${lines[4]#*=}" == "$release_manifest_digest" \
+      && "${lines[5]#*=}" == "$bundle_sums_digest" \
+      && "${lines[6]#*=}" == "$bundle_commit_digest" \
+      && "${lines[7]#*=}" == "$runner_script_digest" \
+      && "${lines[8]#*=}" == "$verifier_script_digest" ]] \
+    || die "The candidate image, release bundle, or integration runner changed after v5 verification."
+
+  verified_epoch="${lines[9]#*=}"
+  verified_utc="${lines[10]#*=}"
+  now_epoch="$(date -u +%s)"
+  expected_utc="$(date -u -d "@$verified_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+  [[ "$now_epoch" =~ ^[0-9]{10,}$ && "$expected_utc" == "$verified_utc" ]] \
+    || die "The PostgreSQL v5 attestation time is invalid."
+  (( verified_epoch <= now_epoch + 60 && now_epoch - verified_epoch <= 1800 )) \
+    || die "The PostgreSQL v5 attestation is expired or from the future."
+
+  rm -f -- "$claimed_path"
+  echo "Consumed one-time PostgreSQL v5 integration attestation for $expected_commit."
+}
+
 validate_release_bundle() {
   local expected_commit="$1"
   local required_file

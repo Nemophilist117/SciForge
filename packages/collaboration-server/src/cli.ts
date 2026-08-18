@@ -49,12 +49,31 @@ const providerSecretReader = providerSecretDirectory
   ? await FileProviderSecretReader.create(providerSecretDirectory)
   : undefined
 
+const oidcIssuer = process.env.SCIFORGE_COLLABORATION_OIDC_ISSUER?.trim()
+const oidcAudience = process.env.SCIFORGE_COLLABORATION_OIDC_AUDIENCE?.trim() || 'sciforge-cloud-api'
+if (oidcAudience !== 'sciforge-cloud-api') {
+  throw new Error('SCIFORGE_COLLABORATION_OIDC_AUDIENCE must equal sciforge-cloud-api.')
+}
+const oidcAuthorizedParties = optionalCsvEnvironment('SCIFORGE_COLLABORATION_OIDC_AUTHORIZED_PARTIES') ??
+  ['sciforge-desktop', 'sciforge-web-mobile']
+if (oidcAuthorizedParties.length !== 2 ||
+    !oidcAuthorizedParties.includes('sciforge-desktop') ||
+    !oidcAuthorizedParties.includes('sciforge-web-mobile')) {
+  throw new Error('OIDC authorized parties must be exactly sciforge-desktop,sciforge-web-mobile.')
+}
+
 const runtime = createCollaborationServerRuntime({
   pool,
   host: process.env.SCIFORGE_COLLABORATION_LISTEN_HOST?.trim() || '127.0.0.1',
   port: integerEnvironment('SCIFORGE_COLLABORATION_LISTEN_PORT', 8787, 1, 65_535),
   basePath: process.env.SCIFORGE_COLLABORATION_BASE_PATH,
   allowedOrigins: optionalCsvEnvironment('SCIFORGE_COLLABORATION_ALLOWED_ORIGINS'),
+  ...(oidcIssuer ? { oidc: {
+      issuer: oidcIssuer,
+      audience: oidcAudience,
+      allowedAuthorizedParties: oidcAuthorizedParties,
+      allowInsecureLoopback: booleanEnvironment('SCIFORGE_COLLABORATION_OIDC_ALLOW_INSECURE_LOOPBACK', false)
+    } } : {}),
   ...(providerConfiguration && providerSecretReader
     ? { providerRuntimeFactory: ({ repository, service, authentication }) => createInstalledProviderRuntime({
         pool, repository, service, authentication,
@@ -101,4 +120,12 @@ function optionalCsvEnvironment(name: string): string[] | undefined {
   const value = process.env[name]
   if (!value?.trim()) return undefined
   return value.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function booleanEnvironment(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase()
+  if (!value) return fallback
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new Error(`Invalid boolean environment variable ${name}.`)
 }

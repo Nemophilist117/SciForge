@@ -15,7 +15,8 @@ test('preserves a reverse-proxy base path for commands and WebSocket events', as
           type: 'rest.inbox_page',
           requestId: request.requestId,
           messages: [],
-          nextSequence: 0
+          ackedSequence: 0,
+          nextSequence: 1
         }
       : {
           protocolVersion: '1.0',

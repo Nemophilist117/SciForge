@@ -3,6 +3,8 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import {
+  copyFile,
+  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -17,19 +19,29 @@ import { createReadStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const defaultRepositoryRoot = resolve(scriptDirectory, '..')
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const gitCommand = process.platform === 'win32' ? 'git.exe' : 'git'
 const manifestFilename = 'RELEASE_MANIFEST.json'
+const collaborationContractsPackageName = '@sciforge/collaboration-contracts'
+const contractArtifactPrefix = 'artifacts/protocol-1.0/'
+const contractArtifactManifestFilename = 'ARTIFACT_MANIFEST.json'
+const contractCommitPlaceholder = '__SCIFORGE_COLLABORATION_COMMIT__'
+const maximumUnpackedArchiveBytes = 128 * 1024 * 1024
+const tarBlockBytes = 512
 
 export const COLLABORATION_RELEASE_PACKAGES = Object.freeze([
   Object.freeze({
     directory: 'packages/collaboration-contracts',
-    name: '@sciforge/collaboration-contracts',
-    requiredFiles: Object.freeze(['package.json']),
-    requiredPrefixes: Object.freeze(['dist/'])
+    name: collaborationContractsPackageName,
+    requiredFiles: Object.freeze([
+      'package.json',
+      `${contractArtifactPrefix}${contractArtifactManifestFilename}`
+    ]),
+    requiredPrefixes: Object.freeze(['dist/', contractArtifactPrefix])
   }),
   Object.freeze({
     directory: 'packages/collaboration-provider-zulip',
@@ -212,6 +224,250 @@ export async function sha256File(path) {
   return hash.digest('hex')
 }
 
+function sha256Content(content) {
+  return createHash('sha256').update(content).digest('hex')
+}
+
+function parseJson(content, label) {
+  try {
+    return JSON.parse(Buffer.isBuffer(content) ? content.toString('utf8') : content)
+  } catch {
+    throw new Error(`${label} is not valid JSON.`)
+  }
+}
+
+function collectContractCommits(value, commits = []) {
+  if (Array.isArray(value)) {
+    for (const nested of value) collectContractCommits(nested, commits)
+    return commits
+  }
+  if (value === null || typeof value !== 'object') return commits
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === 'contractCommit') commits.push(nested)
+    collectContractCommits(nested, commits)
+  }
+  return commits
+}
+
+export function validateContractArtifactFiles(files, expectedCommitInput) {
+  const expectedCommit = assertFullCommit(expectedCommitInput)
+  if (!(files instanceof Map)) {
+    throw new Error('Generated collaboration contract artifacts must be a Map.')
+  }
+
+  const normalizedFiles = new Map()
+  for (const [relativePath, content] of files) {
+    const normalizedPath = normalizePackPath(relativePath)
+    if (normalizedPath !== relativePath || !normalizedPath.endsWith('.json')) {
+      throw new Error(`Contract artifact has an invalid path: ${String(relativePath)}`)
+    }
+    if (normalizedFiles.has(normalizedPath)) {
+      throw new Error(`Contract artifact path is duplicated: ${normalizedPath}`)
+    }
+    if (typeof content !== 'string' && !Buffer.isBuffer(content)) {
+      throw new Error(`Contract artifact is not text: ${normalizedPath}`)
+    }
+    normalizedFiles.set(normalizedPath, Buffer.from(content))
+  }
+
+  const manifestContent = normalizedFiles.get(contractArtifactManifestFilename)
+  if (!manifestContent) {
+    throw new Error(`Contract artifacts are missing ${contractArtifactManifestFilename}.`)
+  }
+  const manifest = parseJson(manifestContent, contractArtifactManifestFilename)
+  if (manifest?.contractCommit !== expectedCommit) {
+    throw new Error('Contract artifact manifest commit does not match the release commit.')
+  }
+  if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+    throw new Error('Contract artifact manifest has no file inventory.')
+  }
+
+  const describedPaths = new Set()
+  for (const entry of manifest.files) {
+    const relativePath = normalizePackPath(entry?.path)
+    if (relativePath !== entry.path || relativePath === contractArtifactManifestFilename) {
+      throw new Error(`Contract artifact manifest has an invalid file path: ${String(entry?.path)}`)
+    }
+    if (describedPaths.has(relativePath)) {
+      throw new Error(`Contract artifact manifest duplicates ${relativePath}.`)
+    }
+    describedPaths.add(relativePath)
+    const content = normalizedFiles.get(relativePath)
+    if (!content) throw new Error(`Contract artifact manifest references missing ${relativePath}.`)
+    if (!/^[0-9a-f]{64}$/u.test(entry.sha256)) {
+      throw new Error(`Contract artifact manifest has an invalid SHA-256 for ${relativePath}.`)
+    }
+    if (entry.sha256 !== sha256Content(content)) {
+      throw new Error(`Contract artifact SHA-256 mismatch for ${relativePath}.`)
+    }
+    if (!Number.isSafeInteger(entry.bytes) || entry.bytes !== content.byteLength) {
+      throw new Error(`Contract artifact byte count mismatch for ${relativePath}.`)
+    }
+  }
+
+  const actualPaths = [...normalizedFiles.keys()]
+    .filter((relativePath) => relativePath !== contractArtifactManifestFilename)
+    .sort()
+  if (JSON.stringify(actualPaths) !== JSON.stringify([...describedPaths].sort())) {
+    throw new Error('Contract artifact package contains an unlisted file.')
+  }
+
+  for (const [relativePath, content] of normalizedFiles) {
+    const document = parseJson(content, relativePath)
+    const commits = collectContractCommits(document)
+    if (commits.length === 0 || commits.some((commit) => commit !== expectedCommit)) {
+      throw new Error(`Contract artifact commit provenance mismatch for ${relativePath}.`)
+    }
+    if (
+      relativePath !== contractArtifactManifestFilename &&
+      content.includes(Buffer.from(contractCommitPlaceholder))
+    ) {
+      throw new Error(`Contract artifact still contains the source commit placeholder: ${relativePath}`)
+    }
+  }
+
+  return Object.freeze({ manifest, files: normalizedFiles })
+}
+
+function readTarString(header, offset, length) {
+  const field = header.subarray(offset, offset + length)
+  const end = field.indexOf(0)
+  return field.subarray(0, end === -1 ? field.length : end).toString('utf8')
+}
+
+function readTarOctal(header, offset, length, label) {
+  const field = readTarString(header, offset, length).trim()
+  if (!/^[0-7]+$/u.test(field)) throw new Error(`Packed archive has an invalid ${label}.`)
+  const value = Number.parseInt(field, 8)
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Packed archive has an unsafe ${label}.`)
+  }
+  return value
+}
+
+function isZeroBlock(block) {
+  return block.every((byte) => byte === 0)
+}
+
+function verifyTarHeaderChecksum(header) {
+  const expected = readTarOctal(header, 148, 8, 'header checksum')
+  let actual = 0
+  for (let index = 0; index < header.length; index += 1) {
+    actual += index >= 148 && index < 156 ? 32 : header[index]
+  }
+  if (actual !== expected) throw new Error('Packed archive has an invalid header checksum.')
+}
+
+export async function readNpmPackageArchiveFiles(path) {
+  let archive
+  try {
+    archive = gunzipSync(await readFile(path), { maxOutputLength: maximumUnpackedArchiveBytes })
+  } catch (error) {
+    throw new Error('Unable to safely decompress the packed npm archive.', { cause: error })
+  }
+  if (archive.length === 0 || archive.length % tarBlockBytes !== 0) {
+    throw new Error('Packed npm archive is not a complete tar stream.')
+  }
+
+  const files = new Map()
+  let offset = 0
+  let terminated = false
+  while (offset < archive.length) {
+    const header = archive.subarray(offset, offset + tarBlockBytes)
+    if (isZeroBlock(header)) {
+      const secondEndBlock = archive.subarray(offset + tarBlockBytes, offset + (2 * tarBlockBytes))
+      if (secondEndBlock.length !== tarBlockBytes || !isZeroBlock(secondEndBlock)) {
+        throw new Error('Packed npm archive has an incomplete end marker.')
+      }
+      if (!isZeroBlock(archive.subarray(offset))) {
+        throw new Error('Packed npm archive contains data after its end marker.')
+      }
+      terminated = true
+      break
+    }
+
+    verifyTarHeaderChecksum(header)
+    if (!readTarString(header, 257, 6).startsWith('ustar')) {
+      throw new Error('Packed npm archive is not in the supported USTAR format.')
+    }
+    const name = readTarString(header, 0, 100)
+    const prefix = readTarString(header, 345, 155)
+    const archivePath = prefix ? `${prefix}/${name}` : name
+    if (!archivePath.startsWith('package/')) {
+      throw new Error(`Packed npm archive has an invalid root path: ${archivePath}`)
+    }
+    const normalizedPath = normalizePackPath(archivePath)
+    const size = readTarOctal(header, 124, 12, 'entry size')
+    const type = header[156]
+    if (type !== 0 && type !== 48) {
+      throw new Error(`Packed npm archive contains a non-regular entry: ${normalizedPath}`)
+    }
+    const contentStart = offset + tarBlockBytes
+    const contentEnd = contentStart + size
+    if (contentEnd > archive.length) {
+      throw new Error(`Packed npm archive truncates ${normalizedPath}.`)
+    }
+    if (files.has(normalizedPath)) {
+      throw new Error(`Packed npm archive duplicates ${normalizedPath}.`)
+    }
+    files.set(normalizedPath, Buffer.from(archive.subarray(contentStart, contentEnd)))
+    offset = contentStart + Math.ceil(size / tarBlockBytes) * tarBlockBytes
+  }
+  if (!terminated) throw new Error('Packed npm archive has no end marker.')
+  return files
+}
+
+async function verifyPackedPackageArchive(archivePath, packed, specification, expectedCommit) {
+  const files = await readNpmPackageArchiveFiles(archivePath)
+  const actualPaths = [...files.keys()].sort()
+  if (JSON.stringify(actualPaths) !== JSON.stringify([...packed.files].sort())) {
+    throw new Error(`${specification.name} archive does not match the npm pack file manifest.`)
+  }
+
+  const packageJsonContent = files.get('package.json')
+  if (!packageJsonContent) throw new Error(`${specification.name} archive is missing package.json.`)
+  const packageJson = parseJson(packageJsonContent, `${specification.name} package.json`)
+  if (packageJson.name !== packed.name || packageJson.version !== packed.version) {
+    throw new Error(`${specification.name} archive package identity does not match npm pack metadata.`)
+  }
+
+  if (specification.name === collaborationContractsPackageName) {
+    const artifactFiles = new Map([...files]
+      .filter(([relativePath]) => relativePath.startsWith(contractArtifactPrefix))
+      .map(([relativePath, content]) => [relativePath.slice(contractArtifactPrefix.length), content]))
+    validateContractArtifactFiles(artifactFiles, expectedCommit)
+  }
+}
+
+async function defaultGenerateContractArtifactFiles(commit) {
+  const { tsImport } = await import('tsx/esm/api')
+  const artifacts = await tsImport('./collaboration-contract-artifacts.mjs', import.meta.url)
+  return artifacts.generateContractArtifactFiles(commit)
+}
+
+async function stageCollaborationContractsPackage({
+  commit,
+  generateContractArtifactFiles,
+  repositoryRoot,
+  stagingDirectory
+}) {
+  const sourceDirectory = join(repositoryRoot, 'packages/collaboration-contracts')
+  const packageDirectory = join(stagingDirectory, '.collaboration-contracts-package')
+  await mkdir(packageDirectory)
+  await copyFile(join(sourceDirectory, 'package.json'), join(packageDirectory, 'package.json'))
+  await cp(join(sourceDirectory, 'dist'), join(packageDirectory, 'dist'), { recursive: true })
+
+  const generatedFiles = await generateContractArtifactFiles(commit)
+  const validated = validateContractArtifactFiles(generatedFiles, commit)
+  const artifactDirectory = join(packageDirectory, contractArtifactPrefix)
+  for (const [relativePath, content] of validated.files) {
+    const destination = join(artifactDirectory, relativePath)
+    await mkdir(dirname(destination), { recursive: true })
+    await writeFile(destination, content, { mode: 0o644 })
+  }
+  return packageDirectory
+}
+
 async function defaultRunCommand({ command, args, cwd }) {
   return await new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, {
@@ -332,6 +588,7 @@ async function assertBundleFileSet(stagingDirectory, expectedFilenames) {
 
 export async function buildCollaborationServerBundle({
   commit,
+  generateContractArtifactFiles = defaultGenerateContractArtifactFiles,
   log = () => {},
   outputDirectory,
   privateTestRelease = false,
@@ -347,6 +604,9 @@ export async function buildCollaborationServerBundle({
   }
   if (privateTestRelease && teamPrivateAcceptance) {
     throw new Error('Private release modes are mutually exclusive.')
+  }
+  if (typeof generateContractArtifactFiles !== 'function') {
+    throw new Error('generateContractArtifactFiles must be a function.')
   }
   const privateFeatureRelease = privateTestRelease || teamPrivateAcceptance
   const root = resolve(repositoryRoot)
@@ -437,13 +697,24 @@ export async function buildCollaborationServerBundle({
       })
     }
 
+    log(`Generating ${collaborationContractsPackageName} artifacts for ${approvedCommit}.`)
+    const contractsPackageDirectory = await stageCollaborationContractsPackage({
+      commit: approvedCommit,
+      generateContractArtifactFiles,
+      repositoryRoot: root,
+      stagingDirectory
+    })
+
     for (const { packageJson, specification } of workspacePackages) {
       log(`Packing ${specification.name}.`)
+      const packageTarget = specification.name === collaborationContractsPackageName
+        ? [contractsPackageDirectory]
+        : ['--workspace', specification.name]
       const packResult = await runCommand({
         command: npmCommand,
         args: [
           'pack',
-          '--workspace', specification.name,
+          ...packageTarget,
           '--json',
           '--ignore-scripts',
           '--pack-destination', stagingDirectory
@@ -464,8 +735,15 @@ export async function buildCollaborationServerBundle({
       if (!archiveDetails.isFile()) {
         throw new Error(`npm pack did not create a regular archive for ${specification.name}.`)
       }
+      await verifyPackedPackageArchive(
+        join(stagingDirectory, packed.filename),
+        packed,
+        specification,
+        approvedCommit
+      )
       packedPackages.push(packed)
     }
+    await rm(contractsPackageDirectory, { recursive: true, force: true })
 
     const dependencies = Object.fromEntries(packedPackages.map((packed) => [
       packed.name,

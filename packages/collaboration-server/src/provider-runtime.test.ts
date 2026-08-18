@@ -204,7 +204,7 @@ describe('provider runtime', () => {
     expect(provider.startCursors.slice(0, 2)).toEqual([undefined, undefined])
   })
 
-  it('routes a strict challenge event with its challenge id and never requires a locator', async () => {
+  it('fails closed on legacy Provider challenges without invoking User pairing bootstrap', async () => {
     const event: ProviderEvent = {
       protocolVersion: CURRENT_PROTOCOL_VERSION,
       provider: 'fake',
@@ -224,18 +224,24 @@ describe('provider runtime', () => {
     }
     const provider = new FakeProvider(event)
     const ledger = new FakeRuntimeStore()
-    const verifications: Array<Record<string, unknown>> = []
+    let legacyVerificationCalls = 0
+    const rejections: Array<{ action: string; code?: string }> = []
     const runtime = new DefaultCollaborationProviderRuntime({
       providers: [provider],
       store: ledger,
       authentication: { resolveProviderIdentity: async () => { throw new Error('not used') } },
       repository: emptyRepository(),
-      pairingAssurance: { fake: 'strong' },
       service: {
         ...emptyService(),
-        verifyPairingFromProvider: async (input) => {
-          verifications.push(input)
-          return { challengeId: input.challengeId }
+        verifyPairingFromProvider: async () => {
+          legacyVerificationCalls += 1
+          throw new Error('legacy verification must remain unreachable')
+        },
+        recordRejectedBoundary: async (_actor: unknown, action: string, error: unknown) => {
+          rejections.push({ action,
+            ...(typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+              ? { code: error.code }
+              : {}) })
         }
       }
     })
@@ -244,14 +250,16 @@ describe('provider runtime', () => {
     await waitUntil(() => ledger.cursor === 'cursor-pairing-1', 1_500)
     await runtime.stop()
 
-    expect(verifications).toEqual([expect.objectContaining({
+    expect(legacyVerificationCalls).toBe(0)
+    expect(rejections).toEqual([expect.objectContaining({ code: 'permission_denied' })])
+    expect(ledger.completedEvents).toEqual(['event-pairing-1'])
+    expect(ledger.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
       provider: 'fake',
-      realmId: 'realm-1',
-      providerUserId: 'remote-user-1',
-      challengeId: 'chl_123456789012',
-      challengeCode: 'pairing-response-1234',
-      assurance: 'strong'
-    })])
+      status: 'degraded',
+      details: expect.objectContaining({ errorCode: 'permission_denied' })
+    })]))
+    expect(JSON.stringify({ rejections, diagnostics: ledger.diagnostics })).not.toContain('pairing-response-1234')
+    expect(JSON.stringify({ rejections, diagnostics: ledger.diagnostics })).not.toContain('remote-user-1')
   })
 
   it('applies a confirmed locator change before checkpointing the provider cursor', async () => {

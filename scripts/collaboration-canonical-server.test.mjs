@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { AuthenticationService } from '../packages/collaboration-server/src/auth.ts'
 import { CollaborationServiceError } from '../packages/collaboration-server/src/errors.ts'
 import { CollaborationService } from '../packages/collaboration-server/src/service.ts'
 import {
@@ -9,16 +8,7 @@ import {
   FakeClock,
   FakeInboxNotifier
 } from '../test-fixtures/collaboration/fake-adapters.mjs'
-
-function userActor(userId, assurance = 'strong') {
-  return {
-    kind: 'user',
-    actorKey: `test-user:${userId}`,
-    userId,
-    credentialId: `test-credential:${userId}`,
-    assurance
-  }
-}
+import { createUnifiedIdentityServerFixture } from '../test-fixtures/collaboration/unified-identity/server-fixture.mjs'
 
 function expectCode(code, operation) {
   return assert.rejects(operation, (error) => {
@@ -28,60 +18,76 @@ function expectCode(code, operation) {
   })
 }
 
-function createServiceRig() {
+async function createServiceRig(t) {
   const clock = new FakeClock()
   const repository = new FakeCollaborationRepository()
   const notifier = new FakeInboxNotifier()
   const service = new CollaborationService({ repository, notifier, now: clock.now })
-  const authentication = new AuthenticationService(repository, clock.now)
-  return { clock, repository, notifier, service, authentication }
+  const identity = await createUnifiedIdentityServerFixture({ repository, now: clock.now })
+  t.after(() => identity.close())
+  return { clock, repository, notifier, service, identity, identities: identity.identities,
+    authentication: identity.authentication }
 }
 
 async function bindUser(rig, slot, providerUserId = `provider-user-${slot.toLowerCase()}`) {
-  const begun = await rig.service.beginPairing({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    requestedDisplayName: `用户 ${slot}`,
-    idempotencyKey: `begin-pairing-${slot}`
-  })
-  const verified = await rig.service.verifyPairingFromProvider({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    providerUserId,
-    providerEventId: `provider-event-${slot}`,
-    challengeCode: begun.challengeCode,
-    assurance: 'strong'
-  })
-  const redeemed = await rig.service.redeemPairing({
-    pollSecret: begun.pollSecret,
-    idempotencyKey: `redeem-pairing-${slot}`
-  })
+  const user = await rig.identity.createUser(`用户 ${slot}`, { displayName: `用户 ${slot}` })
+  const binding = await rig.identity.bindZulip(user, `canonical-${slot}`, { zulipUserId: providerUserId })
   return {
-    userId: verified.userId,
-    endpointId: verified.humanEndpointId,
-    providerUserId,
-    actor: userActor(verified.userId),
-    credential: redeemed.userCredential
+    ...user,
+    ...binding
   }
 }
 
 async function registerAgent(rig, participant, slot) {
+  const device = await rig.identity.createDevice(participant, `canonical-agent-${slot}`, {
+    displayName: `SciForge ${slot}`,
+    capabilitySummary: ['agent-runtime']
+  })
   const registered = await rig.service.registerAgent(participant.actor, {
-    installationId: `installation-${slot.toLowerCase()}`,
+    deviceId: device.device.deviceId,
     displayName: `SciForge ${slot}`,
     nodeType: 'desktop',
     capabilities: ['agent-runtime'],
     idempotencyKey: `register-agent-${slot}`
   })
+  const actor = await rig.authentication.resolveBearer(registered.deviceCredential)
+  const reportedAt = rig.clock.now().toISOString()
+  const expiresAt = new Date(rig.clock.now().getTime() + 60 * 60 * 1_000).toISOString()
+  await rig.service.reportAgentCapabilityProfile(actor, {
+    agentId: registered.agent.agentId,
+    ownerUserId: participant.userId,
+    nodeType: 'personal_computer',
+    os: { family: 'linux', architecture: 'x64' },
+    runtimeIds: ['runtime.test'],
+    capabilities: [{
+      capabilityId: 'agent-runtime',
+      evidence: { level: 'verified', checkedAt: reportedAt }
+    }],
+    vpnAccessIds: [],
+    slurmClusterIds: [],
+    accessibleResourceRefIds: [],
+    resultReturnPolicy: {
+      summary: true,
+      evidenceRefs: true,
+      resourceRefs: true,
+      logSummary: true,
+      fullFileRequiresConfirmation: true,
+      fullLogRequiresConfirmation: true
+    },
+    reportedAt,
+    expiresAt,
+    idempotencyKey: `report-agent-capability-${slot}`
+  })
   return {
     agent: registered.agent,
     credential: registered.deviceCredential,
-    actor: await rig.authentication.resolveBearer(registered.deviceCredential)
+    actor,
+    ...device
   }
 }
 
-test('2.5 canonical service rejects identity theft/replay, keeps stable identity, rotates credentials and enforces revocation', async () => {
-  const rig = createServiceRig()
+test('2.5 canonical service rejects identity theft/replay, keeps stable OIDC identity, rotates Agent credentials and enforces revocation', async (t) => {
+  const rig = await createServiceRig(t)
   const a = await bindUser(rig, 'A')
   const b = await bindUser(rig, 'B')
 
@@ -101,35 +107,30 @@ test('2.5 canonical service rejects identity theft/replay, keeps stable identity
     idempotencyKey: 'cross-user-rename'
   }))
 
-  const replay = await rig.service.beginPairing({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    requestedDisplayName: '用户 A',
-    idempotencyKey: 'begin-pairing-A'
-  })
-  assert.equal(replay.replayed, true)
-  assert.equal(replay.challengeCode, undefined)
-  assert.equal(replay.pollSecret, undefined)
+  const replayActor = await rig.authentication.resolveBearer(a.accessToken)
+  assert.equal(replayActor.kind, 'user')
+  assert.equal(replayActor.userId, a.userId)
+  assert.equal(rig.repository.state.users.size, 2)
 
-  const conflict = await rig.service.beginPairing({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    requestedDisplayName: '尝试占用 A 的端点',
-    requestedBy: b.actor,
-    idempotencyKey: 'begin-endpoint-theft'
+  const conflictingBinding = await rig.identities.beginZulipBinding(b.actor, {
+    realmUrl: a.realmUrl,
+    idempotencyKey: 'idem_binding_begin_endpoint_theft'
   })
-  await expectCode('identity_conflict', () => rig.service.verifyPairingFromProvider({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    providerUserId: a.providerUserId,
-    providerEventId: 'provider-event-endpoint-theft',
-    challengeCode: conflict.challengeCode,
-    assurance: 'strong'
-  }))
+  await expectCode('IDENTITY_ALREADY_BOUND', () => rig.identities.confirmZulipBinding(
+    rig.identity.serviceActor,
+    {
+      bindingCode: conflictingBinding.bindingCode,
+      realmUrl: a.realmUrl,
+      realmId: a.realmId,
+      zulipUserId: a.providerUserId,
+      providerEventId: 'provider-event-endpoint-theft',
+      idempotencyKey: 'idem_binding_confirm_endpoint_theft'
+    }
+  ))
 
   const agentA = await registerAgent(rig, a, 'A')
-  await expectCode('identity_conflict', () => rig.service.registerAgent(b.actor, {
-    installationId: agentA.agent.installationId,
+  await expectCode('permission_denied', () => rig.service.registerAgent(b.actor, {
+    deviceId: agentA.device.deviceId,
     displayName: '不得接管',
     nodeType: 'desktop',
     capabilities: ['agent-runtime'],
@@ -137,7 +138,7 @@ test('2.5 canonical service rejects identity theft/replay, keeps stable identity
   }))
 
   const registrationReplay = await rig.service.registerAgent(a.actor, {
-    installationId: agentA.agent.installationId,
+    deviceId: agentA.device.deviceId,
     displayName: 'SciForge A',
     nodeType: 'desktop',
     capabilities: ['agent-runtime'],
@@ -157,75 +158,48 @@ test('2.5 canonical service rejects identity theft/replay, keeps stable identity
   assert.equal(rotatedActor.agentId, agentA.agent.agentId)
   assert.equal(rotatedActor.userId, a.userId)
 
-  const transferredAgent = await rig.service.transferAgentOwnership(a.actor, {
+  await expectCode('assurance_insufficient', () => rig.service.transferAgentOwnership(a.actor, {
     agentId: agentA.agent.agentId,
     targetUserId: b.userId,
     expectedRevision: rotated.agent.revision,
     idempotencyKey: 'transfer-agent-A-to-B'
-  })
-  assert.equal(transferredAgent.agent.ownerUserId, b.userId)
-  assert.equal(transferredAgent.agent.credentialGeneration, rotated.agent.credentialGeneration + 1)
-  await expectCode('credential_revoked', () => rig.authentication.resolveBearer(rotated.deviceCredential))
-  const transferredActor = await rig.authentication.resolveBearer(transferredAgent.deviceCredential)
-  assert.equal(transferredActor.agentId, agentA.agent.agentId)
-  assert.equal(transferredActor.userId, b.userId)
-  const transferReplay = await rig.service.transferAgentOwnership(a.actor, {
-    agentId: agentA.agent.agentId,
-    targetUserId: b.userId,
-    expectedRevision: rotated.agent.revision,
-    idempotencyKey: 'transfer-agent-A-to-B'
-  })
-  assert.equal(transferReplay.replayed, true)
-  assert.equal(transferReplay.deviceCredential, undefined)
+  }))
+  assert.equal((await rig.authentication.resolveBearer(rotated.deviceCredential)).userId, a.userId)
 
-  await expectCode('permission_denied', () => rig.service.rotateAgentCredential(a.actor, {
+  await expectCode('credential_revoked', () => rig.service.rotateAgentCredential(b.actor, {
     agentId: agentA.agent.agentId,
-    expectedRevision: transferredAgent.agent.revision,
-    idempotencyKey: 'old-owner-rotate-transferred-agent'
+    expectedRevision: rotated.agent.revision,
+    idempotencyKey: 'other-user-rotate-agent'
   }))
   const rejectedAudit = rig.repository.state.auditEvents.find((event) => (
     event.action === 'agent.credential.rotate' && event.outcome === 'rejected'
   ))
-  assert.equal(rejectedAudit?.actorUserId, a.userId)
-  assert.equal(rejectedAudit?.metadata.errorCode, 'permission_denied')
+  assert.equal(rejectedAudit?.actorUserId, b.userId)
+  assert.equal(rejectedAudit?.metadata.errorCode, 'credential_revoked')
 
-  const revoked = await rig.service.revokeAgent(b.actor, {
+  const revoked = await rig.service.revokeAgent(a.actor, {
     agentId: agentA.agent.agentId,
-    expectedRevision: transferredAgent.agent.revision,
-    idempotencyKey: 'new-owner-revoke-agent'
+    expectedRevision: rotated.agent.revision,
+    idempotencyKey: 'owner-revoke-agent'
   })
   assert.equal(revoked.status, 'revoked')
-  await expectCode('credential_revoked', () => rig.authentication.resolveBearer(transferredAgent.deviceCredential))
+  await expectCode('credential_revoked', () => rig.authentication.resolveBearer(rotated.deviceCredential))
 
-  const transferredEndpoint = await rig.service.transferEndpoint(a.actor, {
-    humanEndpointId: a.endpointId,
-    targetUserId: b.userId,
-    expectedRevision: 1,
-    idempotencyKey: 'transfer-endpoint-A-to-B'
-  })
-  assert.equal(transferredEndpoint.userId, b.userId)
-  await expectCode('permission_denied', () => rig.service.setEndpointStatus(a.actor, {
-    humanEndpointId: a.endpointId,
-    status: 'revoked',
-    expectedRevision: transferredEndpoint.revision,
-    idempotencyKey: 'old-owner-revoke-endpoint'
-  }))
-  const revokedEndpoint = await rig.service.setEndpointStatus(b.actor, {
-    humanEndpointId: a.endpointId,
-    status: 'revoked',
-    expectedRevision: transferredEndpoint.revision,
-    idempotencyKey: 'new-owner-revoke-endpoint'
-  })
-  assert.equal(revokedEndpoint.status, 'revoked')
+  const revokedIdentity = await rig.identities.revokeExternalIdentity(
+    a.actor,
+    a.externalIdentityId,
+    'idem_revoke_external_identity_A'
+  )
+  assert.equal(revokedIdentity.identity.status, 'revoked')
   await expectCode('authentication_required', () => rig.authentication.resolveProviderIdentity(
-    'fake-im',
-    'fake-realm',
+    'zulip',
+    a.realmId,
     a.providerUserId
   ))
 })
 
-test('2.6 canonical receipts, repository rows, audit and replay responses never persist or re-emit issued material', async () => {
-  const rig = createServiceRig()
+test('2.6 canonical receipts, repository rows, audit and replay responses never persist or re-emit issued material', async (t) => {
+  const rig = await createServiceRig(t)
   const a = await bindUser(rig, 'A')
   const b = await bindUser(rig, 'B')
   const agentA = await registerAgent(rig, a, 'A')
@@ -234,33 +208,41 @@ test('2.6 canonical receipts, repository rows, audit and replay responses never 
     expectedRevision: agentA.agent.revision,
     idempotencyKey: 'rotate-agent-A'
   })
-  const transferred = await rig.service.transferAgentOwnership(a.actor, {
-    agentId: agentA.agent.agentId,
-    targetUserId: b.userId,
-    expectedRevision: rotated.agent.revision,
-    idempotencyKey: 'transfer-agent-A-to-B'
-  })
-
-  const inMemoryOnly = [a.credential, b.credential, agentA.credential, rotated.deviceCredential, transferred.deviceCredential]
+  const inMemoryOnly = [
+    a.accessToken,
+    b.accessToken,
+    a.bindingCode,
+    b.bindingCode,
+    agentA.enrollment.nonce,
+    agentA.fixture.deviceRequest.signature,
+    agentA.credential,
+    rotated.deviceCredential
+  ]
   const persisted = JSON.stringify({
-    challenges: [...rig.repository.state.challenges.values()],
+    oidcIdentities: [...rig.repository.state.oidcIdentities.values()],
+    deviceEnrollments: [...rig.repository.state.deviceEnrollments.values()],
+    devices: [...rig.repository.state.devices.values()],
+    zulipBindingRequests: [...rig.repository.state.zulipBindingRequests.values()],
+    endpoints: [...rig.repository.state.endpoints.values()],
     credentials: [...rig.repository.state.credentials.values()],
     receipts: [...rig.repository.state.receipts.values()],
     auditEvents: rig.repository.state.auditEvents
   })
   for (const material of inMemoryOnly) {
     assert.equal(typeof material, 'string')
-    assert.ok(material.length >= 24)
+    assert.ok(material.length >= 8)
     assert.doesNotMatch(persisted, new RegExp(material.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   }
   assert.ok(rig.repository.state.auditEvents.length > 0)
   assert.ok(rig.repository.state.auditEvents.every((event) => (
-    !Object.keys(event.metadata).some((key) => /credential|secret|challenge|password|authorization/i.test(key))
+    !Object.keys(event.metadata).some((key) => (
+      /credential|secret|challenge|password|authorization|token|nonce|signature|binding.?code/i.test(key)
+    ))
   )))
 })
 
-test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idempotency, inbox recovery and handoff', async () => {
-  const rig = createServiceRig()
+test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idempotency, inbox recovery and handoff', async (t) => {
+  const rig = await createServiceRig(t)
   const a = await bindUser(rig, 'A')
   const b = await bindUser(rig, 'B')
   const c = await bindUser(rig, 'C')
@@ -299,18 +281,21 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
 
   let acceptedB = await rig.service.transitionTask(agentB.actor, {
     taskId: taskB.taskId,
+    executionId: taskB.executionId,
     status: 'accepted',
     expectedRevision: taskB.revision,
     idempotencyKey: 'accept-task-B'
   })
   acceptedB = await rig.service.transitionTask(agentB.actor, {
     taskId: taskB.taskId,
+    executionId: acceptedB.executionId,
     status: 'in_progress',
     expectedRevision: acceptedB.revision,
     idempotencyKey: 'start-task-B'
   })
-  await expectCode('permission_denied', () => rig.service.transitionTask(agentA.actor, {
+  await expectCode('assignee_mismatch', () => rig.service.transitionTask(agentA.actor, {
     taskId: taskB.taskId,
+    executionId: acceptedB.executionId,
     status: 'completed',
     expectedRevision: acceptedB.revision,
     resultSummary: '非 assignee 不得完成',
@@ -318,8 +303,8 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
   }))
   await rig.service.createHumanNeeded(agentB.actor, {
     projectId: project.projectId,
-    taskId: taskB.taskId,
-    expectedTaskRevision: acceptedB.revision,
+    source: { kind: 'worker', taskId: taskB.taskId, executionId: acceptedB.executionId,
+      expectedTaskRevision: acceptedB.revision },
     targetUserId: b.userId,
     requiredAssurance: 'verified',
     prompt: 'Worker B 需要 B 的明确输入',
@@ -371,17 +356,17 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
     expectedRevision: project.revision,
     idempotencyKey: 'handoff-A-to-C'
   })
-  await expectCode('permission_denied', () => restarted.createTask(agentA.actor, {
+  await expectCode('coordinator_mismatch', () => restarted.createTask(agentA.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
     title: '旧 Coordinator 任务',
     objective: '旧 Coordinator 不得创建',
-    completionCriteria: [],
+    completionCriteria: ['Owner 确认'],
     dependencyTaskIds: [],
     expectedProjectRevision: handedOff.revision,
     idempotencyKey: 'old-coordinator-task'
   }))
-  await expectCode('permission_denied', () => restarted.createTask(agentC.actor, {
+  await expectCode('confirmation_required', () => restarted.createTask(agentC.actor, {
     projectId: project.projectId,
     assigneeAgentId: agentB.agent.agentId,
     title: '新 Coordinator 直接创建任务',
@@ -404,8 +389,8 @@ test('8.3 and 10.2 canonical Project ledger enforces assignee/coordinator, idemp
   assert.equal(ownerConfirmedTask.createdByAgentId, agentC.agent.agentId)
 })
 
-test('8.4 canonical service bounds payloads and blocks sensitive Project Record material', async () => {
-  const rig = createServiceRig()
+test('8.4 canonical service bounds payloads and blocks sensitive Project Record material', async (t) => {
+  const rig = await createServiceRig(t)
   const a = await bindUser(rig, 'A')
   const agentA = await registerAgent(rig, a, 'A')
   await expectCode('validation_failed', () => rig.service.createProject(a.actor, {
@@ -432,25 +417,25 @@ test('8.4 canonical service bounds payloads and blocks sensitive Project Record 
   }))
 })
 
-test('8.3 and 10.2 canonical human gateway binds source endpoint to user for personal, ProjectInput and HumanAnswer flows', async () => {
-  const rig = createServiceRig()
+test('8.3 and 10.2 canonical human gateway binds trusted Zulip endpoint to User for personal, ProjectInput and HumanAnswer flows', async (t) => {
+  const rig = await createServiceRig(t)
   const a = await bindUser(rig, 'A')
   const b = await bindUser(rig, 'B')
   const c = await bindUser(rig, 'C')
   const agentA = await registerAgent(rig, a, 'A')
   const agentB = await registerAgent(rig, b, 'B')
   const agentC = await registerAgent(rig, c, 'C')
-  const endpointA = await rig.authentication.resolveProviderIdentity('fake-im', 'fake-realm', a.providerUserId)
-  const endpointB = await rig.authentication.resolveProviderIdentity('fake-im', 'fake-realm', b.providerUserId)
-  const endpointC = await rig.authentication.resolveProviderIdentity('fake-im', 'fake-realm', c.providerUserId)
+  const endpointA = await rig.authentication.resolveProviderIdentity('zulip', a.realmId, a.providerUserId)
+  const endpointB = await rig.authentication.resolveProviderIdentity('zulip', b.realmId, b.providerUserId)
+  const endpointC = await rig.authentication.resolveProviderIdentity('zulip', c.realmId, c.providerUserId)
   assert.equal(endpointA.userId, a.userId)
   assert.equal(endpointB.userId, b.userId)
   assert.equal(endpointC.userId, c.userId)
 
   const personalLocator = {
     type: 'provider_locator',
-    provider: 'fake-im',
-    realmId: 'fake-realm',
+    provider: 'zulip',
+    realmId: a.realmId,
     containerId: 'personal-container',
     topicId: 'stable-personal-topic',
     topicDisplayName: '个人 Session'
@@ -508,8 +493,8 @@ test('8.3 and 10.2 canonical human gateway binds source endpoint to user for per
   })
   const projectLocator = {
     type: 'provider_locator',
-    provider: 'fake-im',
-    realmId: 'fake-realm',
+    provider: 'zulip',
+    realmId: a.realmId,
     containerId: 'project-container',
     topicId: 'stable-project-topic',
     topicDisplayName: '多人 Project'
@@ -559,22 +544,24 @@ test('8.3 and 10.2 canonical human gateway binds source endpoint to user for per
   })
   taskB = await rig.service.transitionTask(agentB.actor, {
     taskId: taskB.taskId,
+    executionId: taskB.executionId,
     status: 'accepted',
     expectedRevision: taskB.revision,
     idempotencyKey: 'accept-human-task-B'
   })
   taskB = await rig.service.transitionTask(agentB.actor, {
     taskId: taskB.taskId,
+    executionId: taskB.executionId,
     status: 'in_progress',
     expectedRevision: taskB.revision,
     idempotencyKey: 'start-human-task-B'
   })
   const needed = await rig.service.createHumanNeeded(agentB.actor, {
     projectId: project.projectId,
-    taskId: taskB.taskId,
-    expectedTaskRevision: taskB.revision,
+    source: { kind: 'worker', taskId: taskB.taskId, executionId: taskB.executionId,
+      expectedTaskRevision: taskB.revision },
     targetUserId: b.userId,
-    requiredAssurance: 'strong',
+    requiredAssurance: 'verified',
     prompt: '只由 B 回答',
     expiresAt: new Date(rig.clock.now().getTime() + 60_000).toISOString(),
     idempotencyKey: 'human-needed-B'

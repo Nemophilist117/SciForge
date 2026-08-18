@@ -2,22 +2,23 @@
 
 本目录为新 A ECS 上 `@sciforge/collaboration-server` 的最小 Docker Compose 预发布层。默认仍是 core-only；只有显式叠加 `compose.provider-zulip.yml` 时才启用 Zulip Provider。两种模式都只暴露 ECS loopback，供 A 通过 SSH tunnel 验证服务器、数据库、公开协议和 Provider 边界。
 
-这不是面向 SciForge 的产品入口，也不能证明公网链路已经切换。产品唯一入口必须保持为 `https://chat.sciforge.cn/collaboration`，并由该 HTTPS 路径反向代理到新 A 服务；完整链路是“Zulip → A 云端协同服务 → 本地最新版 SciForge”，结果按相反方向返回。当前 loopback 部署只能作为切换前的 conformance 环境，不能让本地 SciForge 改用 HTTP tunnel 绕过 HTTPS 要求。
+这不是面向 SciForge 的正式产品入口，也不能证明公网链路已经切换。正式成员入口、Human Provider/身份来源、本地最新版 SciForge 的接入方式以及域名、TLS、反向代理拓扑目前都尚未冻结；任何候选链路都必须另行评审并完成真实端到端验证。当前 loopback 部署只用于 A 的服务器 conformance，不得据此把 Zulip、某个域名或某条往返链路写成既定产品方案。
 
 | 层面 | 本目录能证明 | 本目录不能单独证明 |
 | --- | --- | --- |
-| 新 A 服务器 | 固定发布物、数据库、loopback API/WSS、Provider 和重启恢复行为 | canonical HTTPS 已反代到新 A |
-| 自动化验收 | HTTP/WSS 与 Zulip API 的协议级闭环 | 真实最新版 SciForge/AgentRuntime 已完成端到端闭环 |
-| 产品开放 | loopback 控制台、API 与预发布门禁已经具备 | 正式 HTTPS 切换和成员业务验收已经完成 |
+| 新 A 服务器 | 固定发布物、数据库、loopback API/WSS、可选 Provider 和重启恢复行为 | 正式入口或反向代理已指向新 A |
+| 自动化验收 | HTTP/WSS 公共边界；显式启用时可验证候选 Provider adapter | 真实最新版 SciForge/AgentRuntime 已完成端到端闭环 |
+| 产品开放 | loopback 控制台、API 与预发布门禁已经具备 | 正式链路已经选定，或成员业务验收已经完成 |
 
 ## 重要边界
 
 - 运行镜像只安装固定 commit 生成的三个 npm tarball：contracts、Zulip provider 和 server。默认发布仍只接受已进入 `origin/gui` 历史的获批 commit；未合并 feature commit 只能使用下述显式 `private-test` 或 `team-private-acceptance` 模式。Docker build context 受 `.dockerignore` 限制，不复制或编译 SciForge 源码。
 - 默认是 **core-only**：`compose.yml` 不注入 Provider 配置或 secret。`deploy-provider-zulip.sh` 才会显式加载只作用于 app 的 overlay；migrate 始终看不到 Provider 配置和 secret。
+- `compose.yml` 支持透传严格 OIDC 的非秘密配置，但当前正式 issuer 尚未选定。`SCIFORGE_COLLABORATION_OIDC_ISSUER` 为空时进程和数据库 readiness 正常，所有 User、Device 与 binding 入口必须 fail closed；这不是匿名身份模式，也不得恢复 opaque User bearer。Audience 固定为 `sciforge-cloud-api`，授权方固定为 `sciforge-desktop,sciforge-web-mobile`，生产不得允许非 HTTPS issuer。
 - 原生入口是 `POST /v1/commands`、WebSocket `/v1/events` 和 A-only 网页控制台 `/console/`；没有 `/v1/meta`，也没有旧实验服务的 `/v1/ws`。
 - 应用在容器内监听 `0.0.0.0:8787`，但 Docker 只向 ECS `127.0.0.1:${SCIFORGE_COLLAB_HOST_PORT}` 发布。PostgreSQL 不发布宿主机端口。
-- 本目录当前不使用 Nginx，也不开放 80/443；这是预发布隔离边界，不是最终产品网络形态。阿里云安全组继续只允许受限来源访问 SSH 22，正式开放必须另外完成 canonical HTTPS 到新 A 的受控切换。
-- 最新版 SciForge 的本地协作领域只经 A 的 HTTPS/WSS 公共接口连接云端；Zulip adapter 运行在 A 云端服务侧，本地 SciForge 不直接调用 Zulip。A 不应另造一套成员侧聊天、Agent runtime 或临时 HTTP 产品入口。
+- 本目录当前不使用 Nginx，也不开放 80/443；这是预发布隔离边界，不是最终产品网络形态。阿里云安全组继续只允许受限来源访问 SSH 22；正式开放前必须另行批准入口、身份、Provider、TLS 与反向代理方案。
+- 本目录只定义 A 的 HTTP/WSS 公共协作边界，不决定最新版 SciForge 最终从何处接入，也不决定 Zulip 是否成为正式 Human Provider。可选 Zulip adapter 只代表一个显式启用的服务器验收候选，不得外推为产品唯一链路。
 - app 与一次性 migrate 容器固定使用非登录 UID/GID `10001:10001`；Provider secret 由宿主机 `root:10001`、文件 `0640`、目录 `0750` 提供，other 无任何权限。Provider 部署门禁还会拒绝 `sciforge-admin` 或任一可登录宿主机账号把数值 GID `10001` 作为主组或附加组；宿主机没有对应的 NSS group 条目是允许的，容器仍可按数值 GID 读取只读挂载。
 
 ## 1. 在可信构建机生成 release bundle
@@ -31,12 +32,14 @@ test "$release_commit" = "$(git rev-parse origin/gui)"
 
 npm ci
 artifact_dir="$(mktemp -d)"
-npm run collaboration:typecheck
-npm run collaboration:test
+npm run collaboration:a:typecheck
+npm run collaboration:a:test
 npm run collaboration:bundle -- \
   --commit "$release_commit" \
   --output "$artifact_dir/release"
 ```
+
+`collaboration:a:*` 是本目录发布的 A-only 门禁，只覆盖公共 contracts、Provider adapter 边界、Collaboration Server/PostgreSQL 与 A 的服务器 conformance。根级 `collaboration:typecheck`/`collaboration:test` 还包含本地 domain、projection 与跨团队客户端适配；A 不得为了让它们通过而修改 C Runtime、D 消息解析或 E UI。公共合同发生破坏性升级时，这些跨团队适配应作为明确 handoff 单独完成，不能被误算为 A 云端发布代码。
 
 默认模式不会接受仅存在于 feature branch 的 HEAD，manifest 会记录 `releaseMode: "origin-gui"`，且原有 `git merge-base --is-ancestor <HEAD> origin/gui` 生产检查不会被放宽。
 
@@ -53,8 +56,8 @@ git merge-base --is-ancestor "$base_commit" "$release_commit"
 
 npm ci
 artifact_dir="$(mktemp -d)"
-npm run collaboration:typecheck
-npm run collaboration:test
+npm run collaboration:a:typecheck
+npm run collaboration:a:test
 npm run collaboration:bundle -- \
   --private-test-release \
   --commit "$release_commit" \
@@ -143,7 +146,7 @@ sudo deploy/collaboration-private/scripts/deploy.sh \
 6. 启动 app 并等待 `/readyz`；
 7. 执行 loopback、与 release migration 完全一致的 schema version/table set、image revision、core-only provider 拒绝和认证边界验证。
 
-迁移失败时 app 保持停止，不能跳过迁移强行启动。数据库 volume 不随 app image 更新而删除。
+core-only 与 Zulip Provider 两个部署入口共享 `/run/lock/sciforge-collaboration-private-deploy.lock` 的非阻塞独占锁，拒绝发布并发执行。迁移失败时 app 保持停止，不能跳过迁移强行启动。如果 app 启动或 core-only 门禁验证失败，部署 trap 只有在当前 app container ID 仍等于本次记录的候选 ID、且候选与当前 revision 都等于获批 commit 时，才按该不可复用的显式 container ID 停止它；不会在身份检查后再按 Compose service 名称选取容器。若人工恢复或其他操作已经替换 app，trap 只报警并拒绝误停。PostgreSQL、named volume、失败容器日志、备份与 release 现场都会保留，数据库 volume 不随 app image 更新而删除，也不会自动声称回滚成功。
 
 ### 显式启用 Zulip Provider
 
@@ -155,21 +158,11 @@ sudo deploy/collaboration-private/scripts/deploy-provider-zulip.sh \
 
 这个入口额外加载 `compose.provider-zulip.yml`。overlay 只修改 app，并以只读 bind mount 注入 config 和 secret；migrate 不获得这两个环境变量或 mount。启动时 runtime 会调用 `diagnose()` 并将统一脱敏后的结果写入 `provider_diagnostics`。Provider 状态不改变 `/readyz` 的数据库就绪语义，但 `verify-provider-zulip.sh` 会作为单独发布门禁，要求 catalog 恰好只有 `zulip`，且数据库中存在晚于本次 app 容器启动、十分钟内的 `healthy` 诊断。验证过程不打印 secret、配置正文或诊断私有细节。若 app 启动或门禁验证失败，部署 trap 会停止本次未获验证的 app，并保留 PostgreSQL、named volume、失败容器日志、备份与 release 现场供诊断；它不会删除数据、自动声称回滚成功或继续对团队开放失败版本。
 
-### A 两用户服务器 conformance 驱动
+### 旧两用户 Zulip harness 的状态
 
-从同一固定 commit 的本地工作树运行 `scripts/collaboration-a-two-user-e2e.test.mjs`，经 SSH Tunnel 访问 `http://127.0.0.1:<LOCAL_PORT>`。该驱动是 A 可选的自动化服务器验收工具，不是最新版 SciForge 端到端驱动，也不是服务运行或成员接入的前置条件。
+仓库仍保留历史 `scripts/collaboration-a-two-user-e2e.test.mjs`，但它建立在旧匿名 pairing、opaque User credential 与固定 Zulip 流拓扑上，不属于统一 OIDC User → Device → Agent 合同的 A 发布门禁，本轮不得运行或据此宣告业务 E2E。A 不会为了兼容该 harness 恢复匿名入口，也不会要求普通成员提交个人 Zulip API key。
 
-只有运行这项自动化验收时，才需要以下测试拓扑：A 服务 loopback URL、`https://chat.sciforge.cn` realm、Bot email、一个私有 Project stream、Owner/Member email、两个彼此独立且不同于 Project stream 的私有 pairing stream。每个 pairing stream 的订阅者必须精确为对应测试用户与新 A Bot；Project stream 的订阅者必须精确为 Owner、Member 与该 Bot。驱动会通过 Zulip API 核对稳定 user ID，出现任何额外订阅者都拒绝运行。两个测试用户的 Zulip API key 只能通过各自 `0600` 的 `..._API_KEY_FILE` 提供，不能放在命令行或普通 env 值中。
-
-Owner/Member API key 与三个私有 stream 仅服务于上述自动化测试夹具。正常产品运行不要求这三个固定 stream；普通成员也无需向 A 提供个人 Zulip API key。A 服务运行时只持有专用 Bot 的受限凭据，成员通过正式 Zulip 身份、pairing 和最新版 SciForge 协作能力接入。
-
-`SCIFORGE_COLLAB_ZULIP_SECRET_OUTPUT_DIR` 必须是运行用户拥有、非 symlink、权限 `0700` 的仓库外目录。驱动会把一次性 User/Agent 凭据原子写成独立 `0600` 文件，最后只生成包含 User/Endpoint/Agent ID 与凭据文件 basename 的脱敏 manifest。驱动拒绝预置 A/B 应用身份，必须在本次执行中完成正式 pairing；凭据撤销测试后会重新 pairing 并轮换原 Agent credential，确保留下的测试拓扑仍可运营。
-
-```bash
-SCIFORGE_COLLAB_A_E2E=1 npm run collaboration:acceptance:test
-```
-
-该驱动只使用公开 HTTP/WSS 与 Zulip API，不导入 Service/Repository，也不写数据库。通过条件包括实时 WSS 唤醒、处理后 ACK、在 WSS 已断开时产生 `task.offered` 与 `task.cancelled` 后按连续 sequence 从最后 cursor 补取、真实幂等复放、HumanNeeded/Answer、ResourceRef、ProjectRecord 查询与验收、同 Worker 重试、跨 Worker 改派、旧 Worker 拒绝和凭据撤销/恢复。它证明的是 A 服务公共边界的 conformance；只有 canonical HTTPS 已指向新 A，且真实最新版 SciForge 经 Zulip 完成任务接收与结果回传后，才能宣告产品端到端链路通过。
+正式身份来源、D→A trusted binding confirm、Human Provider 与最新版 SciForge 接入方式冻结后，应由对应成员基于公开机器合同提供新的跨团队 E2E；A 只负责让云端 API、事务、审计、Inbox 与 fail-closed 边界可验证。在那之前，`collaboration:a:test`、真实 PostgreSQL v5 隔离测试和本目录的 core-only 云端门禁是 A 的权威验收，不能冒充真实 Keycloak、Desktop 或 Zulip 往返闭环。
 
 ## 4. 通过 SSH Tunnel 使用
 
@@ -190,7 +183,7 @@ http://127.0.0.1:18080/v1/commands
 ws://127.0.0.1:18080/v1/events
 ```
 
-如确有低层协议或故障诊断需要，团队预发布验收不得共享管理员账号或一把 key。B、C、D、E 可各使用独立的 `sciforge-tunnel-b` 至 `sciforge-tunnel-e`；SSH tunnel 不是正常产品访问方式，也不替代 Zulip 与 canonical HTTPS。安装时必须提供成员字母、该成员独立的 ed25519 公钥和其真实公网出口 `/32`；key 默认 14 天到期，也可提供更早的 OpenSSH `YYYYMMDDHHMMSSZ` 时间：
+如确有低层协议或故障诊断需要，团队预发布验收不得共享管理员账号或一把 key。B、C、D、E 可各使用独立的 `sciforge-tunnel-b` 至 `sciforge-tunnel-e`；SSH tunnel 不是正常产品访问方式，也不能替代后续获批的正式入口、身份或 Provider 方案。安装时必须提供成员字母、该成员独立的 ed25519 公钥和其真实公网出口 `/32`；key 默认 14 天到期，也可提供更早的 OpenSSH `YYYYMMDDHHMMSSZ` 时间：
 
 ```bash
 sudo deploy/collaboration-private/scripts/install-tunnel-user.sh \
@@ -215,7 +208,7 @@ sudo deploy/collaboration-private/scripts/revoke-tunnel-user.sh \
   b --confirm-tunnel-account-change
 ```
 
-`verify.sh` 会执行一次真实但受限的 core-only API smoke：provider catalog 必须为空；对未安装 provider 的匿名 `pairing.begin` 必须返回 `503 provider_unavailable`，不得返回一次性材料，也不得新增 challenge；随后确认未认证 `user.get` 和 WebSocket Upgrade 均返回 401。该 smoke 不创建 User，不能被描述为用户配对成功或 Project/Task 闭环。
+`verify.sh` 会执行一次真实但受限的 core-only API smoke：provider catalog 必须为空；无 OIDC bearer 的 `pairing.begin`、JWT 形态但不可验证的 `/v1/me`、以及未配置 trusted confirm adapter 的 Zulip binding confirm 都必须返回 401，不得返回一次性材料，也不得新增 User、Device enrollment 或 binding request；随后确认未认证 `user.get` 和 WebSocket Upgrade 同样返回 401。该 smoke 不创建 User，不能被描述为身份登录、用户绑定或 Project/Task 闭环。
 
 可单独复核：
 
@@ -244,18 +237,48 @@ sudo deploy/collaboration-private/scripts/verify-backup-restore.sh \
 
 本地备份只是第一层。每份 dump 和 sidecar 还应复制到加密的异机存储。灾难恢复仍应使用新的 volume；不得直接覆盖唯一生产 volume。
 
+### PostgreSQL v5 隔离业务语义验收
+
+固定 v5 bundle 传到 release 目录后、运行 `deploy.sh` 迁移生产库之前，在无业务写入的维护窗口先运行一次真实 PostgreSQL 隔离验收：
+
+```bash
+sudo deploy/collaboration-private/scripts/verify-postgres-v5-integration.sh \
+  <获批的完整40位contract-commit> \
+  /srv/sciforge-collaboration/secrets/collaboration.env \
+  --confirm-isolated-database-test
+```
+
+脚本与 core/provider 部署共享同一个非阻塞 deploy lock，并在锁内先执行候选 release 的 `docker compose build app`；这一步只构建带固定 revision 的候选 image，不停止或替换当前 app、不启动或重启 PostgreSQL，也不迁移生产库。当前 live app 可以仍是上一固定 commit，脚本会记录它的 container ID、host PID、RestartCount、image 和 revision，并要求前后完全不变。它还要求 PostgreSQL 只连接 `internal=true` 的专用 Compose network 且没有宿主机端口，然后用候选 runtime image 中已经安装的生产 `dist`、migration 和依赖启动一次性非 root runner；不会向 ECS 复制源码、test fixture、Vitest、tsx 或开发依赖。隔离验收通过后再运行 `deploy.sh`；后者会复用候选 image build cache、备份并迁移生产库。
+
+管理员密码不会进入 Docker Config、命令参数、URL 环境变量或日志。宿主机只在 `/run` tmpfs 创建一个 `root:10001/0440` 的 64 位十六进制单值文件，并只读挂载给 runner；runner 在内存中构造固定指向 `postgres:5432/postgres` 的管理员 URL。它创建名称严格匹配 `sciforge_identity_v5_it_<pid>_<12位hex>` 的随机临时数据库，在其中验证 v1→v5 readiness、旧 Agent 撤销、并发 OIDC JIT、Device→Agent 生命周期和 Zulip binding 唯一性，随后在 `finally` 中终止连接并删除该库。外层 trap 只在运行前确认没有同前缀遗留库后，才会按同一严格正则清理本次异常退出的残留；绝不把 `sciforge_collaboration` 作为删除目标。
+
+验收会以生产库当时的实际 migration versions 和实际表集为准（允许它仍是 v3/v4）。前后快照各自在独立的、受限的候选镜像容器内运行，不向 live app 容器注入代码或占用其 cgroup；容器只读挂载单值 `sciforge_collab` 密码文件，不把数据库 URL 或密码放进 Docker env/argv。每次快照使用单个 `REPEATABLE READ READ ONLY` 事务，对每张实际表声明 server-side cursor，并以 `FETCH FORWARD 512` 有界流式计算 row count 和稳定内容 SHA-256；只保留表名、计数及摘要，不输出行内容，并要求运行前后整个快照完全相同。为避免并发业务写入造成误报或掩盖边界，本步骤必须处于无业务写入的维护窗口。live app 的 container ID、host PID、RestartCount、image 和 revision 也必须完全相同。runner 原始日志先保存在 root-only tmpfs 文件中，并同时扫描实际管理员密码、应用数据库密码、认证 URL、连接参数、stack 和 `secretKey`；只有通过扫描后才输出脱敏 pass receipt。注意：`CREATE/DROP DATABASE` 必然写 PostgreSQL 集群 catalog/WAL，但所有业务 fixture 只写随机临时数据库，不写生产 `sciforge_collaboration`。
+
+完整验收及其清理成功后，脚本以原子改名写入 `/run/sciforge-collaboration-private-postgres-v5.attestation`：文件固定为 `root:root/0600`，绑定获批 commit、候选 image ID、release manifest、bundle checksums、contract commit 文件以及 runner/verifier 脚本摘要，并记录 UTC 时间。证明最多有效 30 分钟且只能使用一次；core-only 的 `deploy.sh` 和 Provider 的 `deploy-provider-zulip.sh` 都会在停止 app、启动 PostgreSQL、备份或迁移之前，通过共享 helper 原子 claim 该文件，重新核对所有绑定值后立即消费。候选 image 重建结果、bundle 或验收脚本发生任何变化，或者证明缺失、失败、过期、来自未来，部署都会拒绝继续。每次重新运行验收都会先安全删除旧证明；若 runner、临时库、tmpfs secret/log 或容器清理失败，刚生成的证明也会被删除，因此失败的验收不能沿用之前的 pass。任何测试失败、残留库、清理失败、生产内容快照变化或 app 身份变化都会阻断部署；这项测试也不能替代正式 Provider、OIDC 或最新版 SciForge 的跨系统 E2E。
+
 ### PostgreSQL restart 验收
 
-只在维护窗口、已经确认备份可用时运行。脚本没有交互式模糊确认，必须给出完整固定参数：
+只在维护窗口、已经确认备份可用时运行。脚本没有交互式模糊确认，必须给出完整固定参数。正式 Provider 尚未选定、当前运行 core-only 时使用显式 `--core-only`：
 
 ```bash
 sudo deploy/collaboration-private/scripts/verify-postgres-restart.sh \
   <获批的完整40位contract-commit> \
   /srv/sciforge-collaboration/secrets/collaboration.env \
-  --confirm-postgres-restart
+  --confirm-postgres-restart \
+  --core-only
 ```
 
-它显式加载 Zulip Provider overlay，先验证运行 app 的 image ID、image/container revision label、容器内 `CONTRACT_COMMIT` 都等于传入的固定 commit，再验证 provider label、只读 config/secret mount 和 catalog 恰为 `zulip`（不依赖 app 必须在十分钟内启动），然后记录 app/PostgreSQL container ID、PID、RestartCount、commit 和 release 全表 row counts。脚本停止并原位启动 PostgreSQL，要求 `/healthz` 始终返回 `200`、数据库停机窗口内 `/readyz` 精确返回 `503`、恢复后返回 `200`，且 app container/PID/RestartCount 不变、PostgreSQL PID 改变、row counts 完全一致。`trap` 会在中断或失败时尝试恢复 PostgreSQL。
+只有 app 已经通过 `deploy-provider-zulip.sh` 显式启用 Zulip 候选 Provider 时，才使用 Provider 模式。为兼容既有运维调用，不给 mode flag 时仍默认为这一严格模式；推荐显式写出 `--provider-zulip`：
+
+```bash
+sudo deploy/collaboration-private/scripts/verify-postgres-restart.sh \
+  <获批的完整40位contract-commit> \
+  /srv/sciforge-collaboration/secrets/collaboration.env \
+  --confirm-postgres-restart \
+  --provider-zulip
+```
+
+两种模式都会先验证运行 app 的 image ID、image/container revision label、容器内 `CONTRACT_COMMIT` 都等于传入的固定 commit。core-only 模式要求 `core-only-private` label、没有 Provider env/mount 且 catalog 为空；Provider 模式仍严格要求 `zulip-provider-private` label、只读 config/secret mount 和 catalog 恰为 `zulip`（不依赖 app 必须在十分钟内启动），不会因新增 core-only 分支而放宽。随后脚本记录 app/PostgreSQL container ID、PID、RestartCount、commit 和 release 全表 row counts，停止并原位启动 PostgreSQL，要求 `/healthz` 始终返回 `200`、数据库停机窗口内 `/readyz` 精确返回 `503`、恢复后返回 `200`，且 app container/PID/RestartCount 不变、PostgreSQL PID 改变、row counts 完全一致。`trap` 会在中断或失败时尝试恢复 PostgreSQL。
 
 日志检查只输出三个数字，不输出命中行：必须至少有一个安全的 `postgres.pool.idle_client_error`/`57P0x` 诊断（连接池中多个 idle client 可以各自产生一条），且 unhandled、Client object、stack、`secretKey`、`connectionParameters` 和凭据模式计数都为零。
 
@@ -271,4 +294,4 @@ deploy/collaboration-private/scripts/static-policy-test.sh
 
 默认运行上限：PostgreSQL 1.5 CPU/2 GiB/256 PID，app 1 CPU/768 MiB/256 PID；所有容器使用有界 `json-file` 日志。app 为只读 root filesystem、空 capability set、`no-new-privileges`，并以 Node 镜像的非 root 用户运行。
 
-A 的简易网页控制台已经由同一 server bundle 在 `/console/` 提供，并与 API 共用同源安全边界；它在 loopback 可做 A 内部验收，但在 canonical HTTPS 完成受控反向代理切换前不向成员宣称正式可用。B–E 私有模块仍不属于 A。切换完成前，当前 Zulip 只用于显式的 loopback/SSH-tunnel 服务器 conformance，不应通过放开 8787、5432、让最新版 SciForge 使用 HTTP tunnel 或复制旧实验部署代码来绕过产品链路。
+A 的简易网页控制台已经由同一 server bundle 在 `/console/` 提供，并与 API 共用同源安全边界；它在 loopback 可做 A 内部验收，但在正式入口与链路完成评审和真实端到端验证前不向成员宣称正式可用。B–E 私有模块仍不属于 A。若显式选择 Zulip 做候选 conformance，它也只属于该次验收；不得通过放开 8787、5432、让最新版 SciForge 使用临时 HTTP tunnel 或复制旧实验部署代码来抢先冻结产品链路。

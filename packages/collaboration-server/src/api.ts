@@ -3,19 +3,30 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import {
   createCollaborationError,
+  deviceCreateRequestSchema,
+  deviceEnrollmentCreateRequestSchema,
+  deviceRevokeRequestSchema,
+  externalIdentityRevokeRequestSchema,
   requestIdSchema,
   restRequestSchema,
   restResponseSchema,
+  trustedZulipConfirmContextSchema,
+  zulipBindingBeginRequestSchema,
+  zulipBindingConfirmRequestSchema,
   type HumanEndpointProviderContract,
   type ProviderLocator,
   type RestRequest,
-  type RestResponse
+  type RestResponse,
+  type TrustedZulipConfirmContext,
+  type ZulipBindingConfirmRequest
 } from '@sciforge/collaboration-contracts'
 import { ZodError } from 'zod'
 
 import { AuthenticationService, type AgentActor, type AuthContext, type HumanEndpointActor, type UserActor } from './auth.js'
 import {
+  toActionConfirmation,
   toAgent,
+  toAgentCapabilityProfile,
   toEndpoint,
   toHumanAnswer,
   toHumanNeeded,
@@ -23,6 +34,7 @@ import {
   toParticipant,
   toProject,
   toProjectCapabilityDirectory,
+  toProjectCoordinationView,
   toProjectEndpointBinding,
   toProjectInput,
   toProjectRecord,
@@ -34,6 +46,7 @@ import {
 import { getCollaborationConsoleAsset, type CollaborationConsoleAsset } from './console.js'
 import { stableDigest } from './crypto.js'
 import { CollaborationServiceError } from './errors.js'
+import type { IdentityService } from './identity-service.js'
 import type { CollaborationService } from './service.js'
 
 export const COLLABORATION_SERVER_ID = 'sciforge.collaboration-server'
@@ -51,12 +64,19 @@ export interface ProviderDirectory {
   }): Promise<{ locators: ProviderLocator[]; nextCursor?: string }>
 }
 
+export type BindingConfirmAuthenticator = (
+  request: IncomingMessage,
+  body: ZulipBindingConfirmRequest
+) => Promise<TrustedZulipConfirmContext | null>
+
 export type CollaborationHttpOptions = {
   service: CollaborationService
+  identities?: IdentityService
   authentication: AuthenticationService
   readiness: () => Promise<boolean>
   providers?: ProviderDirectory
   resolveProviderActor?: (request: IncomingMessage, command: RestRequest) => Promise<HumanEndpointActor | null>
+  authenticateZulipBindingConfirm?: BindingConfirmAuthenticator
   basePath?: string
   maxBodyBytes?: number
   now?: () => Date
@@ -102,6 +122,7 @@ async function handle(
     const ready = await options.readiness().catch(() => false)
     return sendJson(response, ready ? 200 : 503, { ok: ready })
   }
+  if (await handleIdentityRoute(request, response, url, options, basePath, maxBodyBytes)) return
   if (request.method !== 'POST' || url.pathname !== `${basePath}/v1/commands`) {
     return sendJson(response, 404, { ok: false })
   }
@@ -143,13 +164,164 @@ async function handle(
   }
 }
 
+async function handleIdentityRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  options: CollaborationHttpOptions,
+  basePath: string,
+  maxBodyBytes: number
+): Promise<boolean> {
+  const path = url.pathname.slice(basePath.length)
+  const identities = options.identities
+  const isIdentityPath = path === '/v1/me' || path === '/v1/device-enrollments' || path === '/v1/devices' ||
+    path === '/v1/me/devices' || path === '/v1/integrations/zulip/bindings' ||
+    path === '/v1/integrations/zulip/bindings/confirm' || path === '/v1/me/external-identities' ||
+    /^\/v1\/me\/devices\/[^/]+$/u.test(path) || /^\/v1\/me\/external-identities\/[^/]+$/u.test(path)
+  if (!isIdentityPath) return false
+  if (!identities) {
+    throw new CollaborationServiceError('resource_offline', 'The A identity service is not configured.', { retryable: true })
+  }
+
+  if (request.method === 'POST' && path === '/v1/integrations/zulip/bindings/confirm') {
+    if (!options.authenticateZulipBindingConfirm) {
+      throw new CollaborationServiceError('authentication_required',
+        'Trusted Zulip binding confirmation authentication is not configured.')
+    }
+    requireJson(request)
+    const body = zulipBindingConfirmRequestSchema.parse(await readJson(request, maxBodyBytes))
+    requireMatchingIdempotencyKey(request, body.idempotencyKey)
+    const authenticatedContext = await options.authenticateZulipBindingConfirm(request, body)
+    if (!authenticatedContext) {
+      throw new CollaborationServiceError('authentication_required',
+        'The Zulip binding confirmation caller is not trusted.')
+    }
+    const trusted = trustedZulipConfirmContextSchema.parse(authenticatedContext)
+    if (trusted.realmUrl !== body.realmUrl || trusted.realmId !== body.realmId ||
+        trusted.zulipUserId !== body.zulipUserId || trusted.providerEventId !== body.providerEventId) {
+      throw new CollaborationServiceError('permission_denied',
+        'The trusted Zulip context does not match the confirmation payload.')
+    }
+    try {
+      sendJson(response, 200, await identities.confirmZulipBinding(trusted.actor, {
+        bindingCode: body.bindingCode,
+        realmUrl: trusted.realmUrl,
+        realmId: trusted.realmId,
+        zulipUserId: trusted.zulipUserId,
+        providerEventId: trusted.providerEventId,
+        idempotencyKey: body.idempotencyKey
+      }))
+    } catch (error) {
+      if (error instanceof CollaborationServiceError && !error.auditRecorded) {
+        await identities.recordRejectedBoundary(trusted.actor, 'zulip.binding.confirm', error).catch(() => undefined)
+      }
+      throw error
+    }
+    return true
+  }
+
+  const actor = await resolveOidcUserRequest(request, options.authentication)
+  try {
+    if (request.method === 'GET' && path === '/v1/me') {
+      sendJson(response, 200, await identities.me(actor))
+      return true
+    }
+    if (request.method === 'POST' && path === '/v1/device-enrollments') {
+      requireJson(request)
+      const body = deviceEnrollmentCreateRequestSchema.parse(await readJson(request, maxBodyBytes))
+      requireMatchingIdempotencyKey(request, body.idempotencyKey)
+      sendJson(response, 200, await identities.createDeviceEnrollment(actor, body))
+      return true
+    }
+    if (request.method === 'POST' && path === '/v1/devices') {
+      requireJson(request)
+      const body = deviceCreateRequestSchema.parse(await readJson(request, maxBodyBytes))
+      requireMatchingIdempotencyKey(request, body.idempotencyKey)
+      sendJson(response, 200, await identities.createDevice(actor, body))
+      return true
+    }
+    if (request.method === 'GET' && path === '/v1/me/devices') {
+      sendJson(response, 200, await identities.listDevices(actor))
+      return true
+    }
+    const deviceMatch = /^\/v1\/me\/devices\/([^/]+)$/u.exec(path)
+    if (request.method === 'DELETE' && deviceMatch) {
+      requireJson(request)
+      const body = deviceRevokeRequestSchema.parse(await readJson(request, maxBodyBytes))
+      if (body.deviceId !== deviceMatch[1]) {
+        throw new CollaborationServiceError('validation_failed', 'Device path and body IDs must match.')
+      }
+      requireMatchingIdempotencyKey(request, body.idempotencyKey)
+      sendJson(response, 200, await identities.revokeDevice(actor, body.deviceId, body.idempotencyKey))
+      return true
+    }
+    if (request.method === 'POST' && path === '/v1/integrations/zulip/bindings') {
+      requireJson(request)
+      const body = zulipBindingBeginRequestSchema.parse(await readJson(request, maxBodyBytes))
+      requireMatchingIdempotencyKey(request, body.idempotencyKey)
+      sendJson(response, 200, await identities.beginZulipBinding(actor, body))
+      return true
+    }
+    if (request.method === 'GET' && path === '/v1/me/external-identities') {
+      sendJson(response, 200, await identities.listExternalIdentities(actor))
+      return true
+    }
+    const identityMatch = /^\/v1\/me\/external-identities\/([^/]+)$/u.exec(path)
+    if (request.method === 'DELETE' && identityMatch) {
+      requireJson(request)
+      const body = externalIdentityRevokeRequestSchema.parse(await readJson(request, maxBodyBytes))
+      if (body.externalIdentityId !== identityMatch[1]) {
+        throw new CollaborationServiceError('validation_failed', 'External identity path and body IDs must match.')
+      }
+      requireMatchingIdempotencyKey(request, body.idempotencyKey)
+      sendJson(response, 200, await identities.revokeExternalIdentity(actor, body.externalIdentityId, body.idempotencyKey))
+      return true
+    }
+    sendJson(response, 405, { ok: false })
+    return true
+  } catch (error) {
+    if (error instanceof CollaborationServiceError && !error.auditRecorded) {
+      await identities.recordRejectedBoundary(actor, `http.${request.method?.toLowerCase() ?? 'unknown'}${path}`, error)
+        .catch(() => undefined)
+    }
+    throw error
+  }
+}
+
+async function resolveOidcUserRequest(
+  request: IncomingMessage,
+  authentication: AuthenticationService
+): Promise<UserActor> {
+  const authorization = firstHeader(request.headers.authorization)
+  const token = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : undefined
+  const actor = await authentication.resolveBearer(token)
+  if (actor.kind !== 'user') {
+    throw new CollaborationServiceError('permission_denied', 'This identity API requires an OIDC User actor.')
+  }
+  return actor
+}
+
+function requireMatchingIdempotencyKey(request: IncomingMessage, bodyKey: string): void {
+  if (firstHeader(request.headers['idempotency-key']) !== bodyKey) {
+    throw new CollaborationServiceError('validation_failed',
+      'Idempotency-Key header must match the strict request body.')
+  }
+}
+
+function requiredIdentityService(options: CollaborationHttpOptions): IdentityService {
+  if (!options.identities) {
+    throw new CollaborationServiceError('resource_offline', 'The A identity service is not configured.', { retryable: true })
+  }
+  return options.identities
+}
+
 async function resolveActor(
   request: IncomingMessage,
   command: RestRequest,
   options: CollaborationHttpOptions
 ): Promise<AuthContext | null> {
   if (isAnonymousBootstrapCommand(command)) return null
-  if (command.type === 'pairing.verify' || command.type === 'project.input.create' || command.type === 'human.answer') {
+  if (command.type === 'project.input.create' || command.type === 'human.answer') {
     const providerActor = await options.resolveProviderActor?.(request, command)
     if (providerActor) return providerActor
     throw new CollaborationServiceError('permission_denied', 'This command is accepted only from the verified provider gateway.')
@@ -163,29 +335,20 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
   const { service } = options
   switch (command.type) {
     case 'pairing.begin': {
-      requireAvailableProvider(options.providers, command.provider)
-      const result = await service.beginPairing(command)
-      if (typeof result.challengeCode !== 'string' || typeof result.pollSecret !== 'string') {
-        throw new CollaborationServiceError('idempotency_conflict', 'One-time pairing material was already returned; start a new pairing request if it was lost.')
-      }
-      return response(command, { type: 'pairing.begun', challengeId: result.challengeId,
-        challengeCode: result.challengeCode, pollSecret: result.pollSecret, expiresAt: result.expiresAt })
-    }
-    case 'pairing.verify': {
-      throw new CollaborationServiceError('permission_denied',
-        'Pairing verification is consumed directly from the authenticated provider event stream.')
+      const result = await requiredIdentityService(options).beginZulipBinding(requiredUser(actor), {
+        realmUrl: command.realmUrl,
+        idempotencyKey: command.idempotencyKey
+      })
+      return response(command, { type: 'pairing.begun', bindingRequestId: result.bindingRequestId,
+        bindingCode: result.bindingCode, expiresAt: result.expiresAt })
     }
     case 'pairing.redeem': {
-      const result = await service.redeemPairing(command)
-      if (result.type === 'pairing.pending') return response(command, { type: 'pairing.pending',
-        challengeId: result.challengeId, retryAfterSeconds: 3 })
-      if (typeof result.userCredential !== 'string') {
-        throw new CollaborationServiceError('idempotency_conflict', 'The one-time user credential was already returned; restart pairing if it was lost.')
-      }
-      return response(command, { type: 'pairing.verified', userId: result.userId,
-        humanEndpointId: result.humanEndpointId, userCredential: result.userCredential })
+      const result = await requiredIdentityService(options).getZulipBindingStatus(requiredUser(actor), command.bindingRequestId)
+      if (result.status === 'pending') return response(command, { type: 'pairing.pending',
+        bindingRequestId: result.bindingRequestId, retryAfterSeconds: 3 })
+      return response(command, { type: 'pairing.bound', identity: result.identity })
     }
-    case 'user.create': throw new CollaborationServiceError('permission_denied', 'Users are created only by verified first pairing.')
+    case 'user.create': throw new CollaborationServiceError('permission_denied', 'Users are created only by verified OIDC JIT resolution.')
     case 'user.get': return entityResponse(command, toUserPrincipal(await service.getUser(requiredActor(actor), command.userId)))
     case 'user.update': return entityResponse(command, toUserPrincipal(await service.updateUser(requiredUser(actor), command)))
     case 'endpoint.challenge.create': {
@@ -209,7 +372,9 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     case 'endpoint.transfer': return entityResponse(command, toEndpoint(await service.transferEndpoint(requiredUser(actor), command)))
     case 'agent.register': {
       const user = requiredUser(actor)
-      if (user.userId !== command.ownerUserId) throw new CollaborationServiceError('permission_denied', 'Cannot register an Agent for another user.')
+      if (command.ownerUserId !== undefined && user.userId !== command.ownerUserId) {
+        throw new CollaborationServiceError('permission_denied', 'Cannot register an Agent for another user.')
+      }
       const result = await service.registerAgent(user, command)
       if (!result.deviceCredential) throw new CollaborationServiceError('idempotency_conflict', 'The one-time Agent credential was already returned.')
       return response(command, { type: 'agent.registered', agent: toAgent(result.agent), deviceCredential: result.deviceCredential })
@@ -217,6 +382,14 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     case 'agent.heartbeat': {
       const device = requiredAgent(actor, command.agentId)
       return entityResponse(command, toAgent(await service.heartbeatAgent(device, command)))
+    }
+    case 'agent.capability_profile.report': {
+      const device = requiredAgent(actor, command.profile.agentId)
+      return entityResponse(command, toAgentCapabilityProfile(await service.reportAgentCapabilityProfile(device, {
+        ...command.profile,
+        expectedRevision: command.expectedProfileRevision === 0 ? undefined : command.expectedProfileRevision,
+        idempotencyKey: command.idempotencyKey
+      })))
     }
     case 'agent.rotate_credential': {
       const result = await service.rotateAgentCredential(requiredUser(actor), { agentId: command.agentId,
@@ -227,7 +400,7 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     case 'agent.revoke': return entityResponse(command, toAgent(await service.revokeAgent(requiredUser(actor), command)))
     case 'credential.revoke_current': {
       const authenticated = requiredHumanOrAgent(actor)
-      await service.revokeCurrentCredential(authenticated, { idempotencyKey: command.idempotencyKey })
+      await service.revokeCurrentCredential(requiredAgent(authenticated), { idempotencyKey: command.idempotencyKey })
       return receiptResponse(command, authenticated)
     }
     case 'agent.owner.transfer': {
@@ -282,10 +455,14 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
       const view = await service.getProject(requiredActor(actor), command.projectId)
       return entityResponse(command, toProject(view.project, view.members))
     }
+    case 'project.coordination_view.get': return entityResponse(command,
+      toProjectCoordinationView(await service.getProjectCoordinationView(
+        requiredHumanOrAgent(actor), command.projectId
+      )))
     case 'project.capability_directory.get': return entityResponse(command,
       toProjectCapabilityDirectory(await service.getProjectCapabilityDirectory(requiredHumanOrAgent(actor), command.projectId)))
     case 'project.transition': {
-      const project = await service.transitionProject(requiredUser(actor), command)
+      const project = await service.transitionProject(requiredHumanOrAgent(actor), command)
       const view = await service.getProject(requiredActor(actor), project.projectId)
       return entityResponse(command, toProject(project, view.members))
     }
@@ -310,22 +487,28 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     }
     case 'project.endpoint.get': return entityResponse(command,
       toProjectEndpointBinding(await service.getProjectEndpointBinding(requiredActor(actor), command.projectId)))
-    case 'task.create': return entityResponse(command, toTask(await service.createTask(requiredUser(actor), {
+    case 'task.create': return entityResponse(command, toTask(await service.createTask(requiredHumanOrAgent(actor), {
       projectId: command.projectId, assigneeAgentId: command.assigneeAgentId, title: command.title,
       objective: command.objective, completionCriteria: command.completionCriteria, dependencyTaskIds: command.dependencyTaskIds,
-      expectedProjectRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey })))
+      requiredCapabilities: command.requiredCapabilities, resourceRefIds: command.resourceRefIds,
+      authorizationRequirements: command.authorizationRequirements,
+      expectedProjectRevision: command.expectedRevision, confirmationId: command.confirmationId,
+      idempotencyKey: command.idempotencyKey })))
     case 'task.get': return entityResponse(command, toTask(await service.getTask(requiredActor(actor), command.taskId)))
     case 'task.retry': return entityResponse(command, toTask(await service.retryOrReassignTask(requiredHumanOrAgent(actor), {
-      taskId: command.taskId, assigneeAgentId: command.assigneeAgentId,
-      expectedRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey
+      taskId: command.taskId, executionId: command.executionId, assigneeAgentId: command.assigneeAgentId,
+      expectedRevision: command.expectedRevision, confirmationId: command.confirmationId,
+      idempotencyKey: command.idempotencyKey
     })))
     case 'task.transition': {
       const status = command.status === 'running' ? 'in_progress' : command.status === 'succeeded' ? 'completed' : command.status
       if (status === 'offered') throw new CollaborationServiceError('invalid_state_transition', 'Retrying a terminal Task requires task.retry; changing the assignee also requires Project owner confirmation.')
-      if (status === 'cancelled') return entityResponse(command, toTask(await service.cancelTask(requiredUser(actor), command)))
+      if (status === 'cancelled') return entityResponse(command,
+        toTask(await service.cancelTask(requiredHumanOrAgent(actor), command)))
       return entityResponse(command, toTask(await service.transitionTask(requiredAgent(actor), {
-        taskId: command.taskId, expectedRevision: command.expectedRevision, status,
-        resultSummary: command.resultSummary, safeFailureCode: command.safeFailureCode,
+        taskId: command.taskId, executionId: command.executionId, expectedRevision: command.expectedRevision, status,
+        ...(command.result ? { result: command.result } : command.resultSummary ? { resultSummary: command.resultSummary } : {}),
+        safeFailureCode: command.safeFailureCode, safeFailureSummary: command.safeFailureSummary,
         idempotencyKey: command.idempotencyKey })))
     }
     case 'task.progress.report': return entityResponse(command, toTask(await service.reportTaskProgress(
@@ -333,7 +516,8 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     )))
     case 'project_record.submit': return entityResponse(command, toProjectRecord(await service.submitProjectRecord(requiredHumanOrAgent(actor), {
       projectId: command.projectId, kind: command.kind, summary: command.body,
-      sourceTaskId: command.sourceTaskId ?? undefined, sourceRevision: command.sourceRevision,
+      sourceTaskId: command.sourceTaskId ?? undefined, sourceExecutionId: command.sourceExecutionId ?? undefined,
+      sourceRevision: command.sourceRevision, resourceRefIds: command.resourceRefIds,
       idempotencyKey: command.idempotencyKey })))
     case 'project_record.get': return entityResponse(command, toProjectRecord(await service.getProjectRecord(
       requiredHumanOrAgent(actor), command.projectRecordId
@@ -348,25 +532,43 @@ async function dispatch(command: RestRequest, actor: AuthContext | null, options
     case 'resource.invalidate': return entityResponse(command, toResourceRef(await service.invalidateResourceRef(
       requiredHumanOrAgent(actor), command
     )))
+    case 'resource.transition': return entityResponse(command, toResourceRef(await service.transitionResourceRef(
+      requiredHumanOrAgent(actor), command
+    )))
     case 'inbox.pull': {
-      const page = await service.pullInbox(requiredActor(actor), command)
-      return response(command, { type: 'rest.inbox_page', messages: page.messages.map(toInboxMessage),
-        nextSequence: page.messages.at(-1)?.sequence ?? command.afterSequence })
+      const authenticated = requiredActor(actor)
+      requireRecipientType(authenticated, command.recipientType)
+      const page = await service.pullInbox(authenticated, command)
+      return response(command, { type: 'rest.inbox_page',
+        messages: page.messages.map((message) => toInboxMessage(message, page.ackedSequence)),
+        ackedSequence: page.ackedSequence, nextSequence: page.nextSequence })
     }
     case 'inbox.ack': {
-      await service.ackInboxMessage(requiredActor(actor), { inboxMessageId: command.inboxMessageId,
-        sequence: command.sequence, idempotencyKey: command.idempotencyKey })
-      return response(command, { type: 'rest.receipt', receipt: { schemaVersion: 1, type: 'inbox.receipt',
-        receiptId: `rcp_${stableDigest({ actorKey: requiredActor(actor).actorKey,
-          idempotencyKey: command.idempotencyKey }).slice(0, 24)}`, inboxMessageId: command.inboxMessageId,
-        recipientType: actor?.kind === 'agent_device' ? 'agent' : 'user', sequence: command.sequence,
-        acknowledgedAt: new Date().toISOString(), createdAt: new Date().toISOString() } })
+      const authenticated = requiredActor(actor)
+      const acknowledged = command.throughSequence !== undefined
+        ? await service.ackInbox(authenticated, { throughSequence: command.throughSequence,
+          idempotencyKey: command.idempotencyKey })
+        : await service.ackInboxMessage(authenticated, { inboxMessageId: requiredString(command.inboxMessageId),
+          sequence: requiredNumber(command.sequence), idempotencyKey: command.idempotencyKey })
+      return response(command, { type: 'inbox.acked', ...acknowledged })
     }
     case 'human.answer': {
       if (actor?.kind !== 'human_endpoint') throw new CollaborationServiceError('permission_denied', 'HumanAnswer requires a verified human endpoint.')
       return entityResponse(command, toHumanAnswer(await service.answerHumanNeeded(actor, command)))
     }
-    case 'human.needed.create': return entityResponse(command, toHumanNeeded(await service.createHumanNeeded(requiredAgent(actor), command)))
+    case 'human.needed.create': return entityResponse(command, toHumanNeeded(await service.createHumanNeeded(requiredAgent(actor), {
+      projectId: command.projectId,
+      source: command.sourceKind === 'worker'
+        ? { kind: 'worker', taskId: requiredString(command.taskId), executionId: requiredString(command.executionId),
+          expectedTaskRevision: requiredNumber(command.expectedTaskRevision) }
+        : { kind: 'coordinator', sourceInboxMessageId: requiredString(command.sourceInboxMessageId) },
+      targetUserId: command.targetUserId, requiredAssurance: command.requiredAssurance,
+      prompt: command.prompt, confirmableAction: command.confirmableAction, expiresAt: command.expiresAt,
+      idempotencyKey: command.idempotencyKey
+    })))
+    case 'confirmation.get': return entityResponse(command, toActionConfirmation(await service.getActionConfirmation(
+      requiredHumanOrAgent(actor), command.confirmationId
+    )))
     case 'receipt.get': {
       const authenticated = requiredActor(actor)
       const receipt = await service.getReceipt(authenticated, command.receiptId)
@@ -417,7 +619,7 @@ function requiredActor(actor: AuthContext | null): AuthContext {
   return actor
 }
 function requiredUser(actor: AuthContext | null): UserActor {
-  if (actor?.kind !== 'user') throw new CollaborationServiceError('permission_denied', 'A user credential is required.')
+  if (actor?.kind !== 'user') throw new CollaborationServiceError('permission_denied', 'An authenticated OIDC User actor is required.')
   return actor
 }
 function requiredAgent(actor: AuthContext | null, expectedAgentId?: string): AgentActor {
@@ -431,6 +633,27 @@ function requiredHumanOrAgent(actor: AuthContext | null): UserActor | AgentActor
     throw new CollaborationServiceError('permission_denied', 'A user or Agent credential is required.')
   }
   return actor
+}
+
+function requireRecipientType(actor: AuthContext, recipientType: 'user' | 'agent'): void {
+  if (actor.kind === 'system' || (actor.kind === 'agent_device') !== (recipientType === 'agent')) {
+    throw new CollaborationServiceError('recipient_mismatch',
+      'Inbox recipientType does not match the authenticated credential.')
+  }
+}
+
+function requiredString(value: string | undefined): string {
+  if (value === undefined) {
+    throw new CollaborationServiceError('validation_failed', 'The strict command is missing required source identity.')
+  }
+  return value
+}
+
+function requiredNumber(value: number | undefined): number {
+  if (value === undefined) {
+    throw new CollaborationServiceError('validation_failed', 'The strict command is missing required source revision or sequence.')
+  }
+  return value
 }
 
 function requireJson(request: IncomingMessage): void {
@@ -482,20 +705,44 @@ function sendFailure(
     resource_offline: 'provider_unavailable', request_expired: 'expired'
   } as const
   const code = codeMap[serviceError.code as keyof typeof codeMap] ?? serviceError.code
-  const currentRevision = serviceError.details?.currentRevision
+  const requestId = context.requestId ?? `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`
+  const traceId = `trc_${randomUUID().replaceAll('-', '').slice(0, 24)}`
+  const currentRevision = safeRevision(serviceError.details?.currentRevision)
+  const currentExecutionId = safeOpaqueId(serviceError.details?.currentExecutionId, 'exe')
+  const confirmationId = safeOpaqueId(serviceError.details?.confirmationId, 'cnf')
+  const ackedSequence = safeSequence(serviceError.details?.ackedSequence, true)
+  const nextSequence = safeSequence(serviceError.details?.nextSequence, false)
   const errorBody = createCollaborationError(
     code as Parameters<typeof createCollaborationError>[0],
     serviceError.message,
     {
+      requestId,
+      traceId,
       ...(context.expectedRevision === undefined ? {} : { expectedRevision: context.expectedRevision }),
-      ...(Number.isSafeInteger(currentRevision) && Number(currentRevision) >= 1
-        ? { currentRevision: Number(currentRevision) }
-        : {})
+      ...(currentRevision === undefined ? {} : { currentRevision }),
+      ...(currentExecutionId === undefined ? {} : { currentExecutionId }),
+      ...(confirmationId === undefined ? {} : { confirmationId }),
+      ...(ackedSequence === undefined ? {} : { ackedSequence }),
+      ...(nextSequence === undefined ? {} : { nextSequence })
     }
   )
-  const requestId = context.requestId ?? `req_${randomUUID().replaceAll('-', '').slice(0, 24)}`
   sendJson(response, errorBody.httpStatus, { protocolVersion: '1.0', type: 'rest.error',
     requestId, error: errorBody })
+}
+
+function safeRevision(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 1 ? Number(value) : undefined
+}
+
+function safeSequence(value: unknown, allowZero: boolean): number | undefined {
+  const minimum = allowZero ? 0 : 1
+  return Number.isSafeInteger(value) && Number(value) >= minimum ? Number(value) : undefined
+}
+
+function safeOpaqueId(value: unknown, prefix: 'exe' | 'cnf'): string | undefined {
+  return typeof value === 'string' && new RegExp(`^${prefix}_[A-Za-z0-9]{12,64}$`, 'u').test(value)
+    ? value
+    : undefined
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -518,17 +765,13 @@ function sendConsoleAsset(response: ServerResponse, asset: CollaborationConsoleA
   response.end(headOnly ? undefined : asset.body)
 }
 
-type AnonymousBootstrapCommand = Extract<RestRequest, {
-  type: 'endpoint.catalog.get' | 'pairing.begin' | 'pairing.redeem'
-}>
+type AnonymousBootstrapCommand = Extract<RestRequest, { type: 'endpoint.catalog.get' }>
 
 function isAnonymousBootstrapCommand(command: RestRequest): command is AnonymousBootstrapCommand {
-  return command.type === 'endpoint.catalog.get' || command.type === 'pairing.begin' || command.type === 'pairing.redeem'
+  return command.type === 'endpoint.catalog.get'
 }
 
 const ANONYMOUS_BOOTSTRAP_LIMITS = {
-  'pairing.begin': 10,
-  'pairing.redeem': 240,
   'endpoint.catalog.get': 120
 } as const
 

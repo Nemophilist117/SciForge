@@ -81,28 +81,26 @@ describe('discriminated transport unions', () => {
 })
 
 describe('canonical pairing and bidirectional Session commands', () => {
-  it('supports unauthenticated pairing begin without bootstrap identity', () => {
+  it('models pairing begin only as an authenticated binding adapter', () => {
     const request = restRequestSchema.parse({
       protocolVersion: '1.0',
       requestId: TEST_IDS.requestId,
       type: 'pairing.begin',
       idempotencyKey: 'idem_pairing_begin_0001',
-      provider: 'example-im',
-      realmId: 'realm-hong-kong',
-      requestedDisplayName: '测试用户'
+      realmUrl: 'https://chat-test.example.invalid'
     })
     expect(request).not.toHaveProperty('userId')
     expect(request).not.toHaveProperty('bootstrapToken')
+    expect(request).not.toHaveProperty('requestedDisplayName')
   })
 
-  it('models one-time pairing material only in dedicated wire variants', () => {
+  it('returns one-time binding material without a poll secret or User credential', () => {
     expect(restResponseSchema.safeParse({
       protocolVersion: '1.0',
       requestId: TEST_IDS.requestId,
       type: 'pairing.begun',
-      challengeId: TEST_IDS.challengeId,
-      challengeCode: invalidTestOnlyValue('CODE'),
-      pollSecret: invalidTestOnlyValue('POLL_VALUE').padEnd(40, '0'),
+      bindingRequestId: 'zbr_identity_test_0001',
+      bindingCode: 'SF-TEST-4P6Q',
       expiresAt: TEST_TIMESTAMP
     }).success).toBe(true)
     expect(JSON.stringify(collaborationFixtures)).not.toContain('pollSecret')
@@ -158,6 +156,7 @@ describe('canonical pairing and bidirectional Session commands', () => {
       type: 'task.retry',
       idempotencyKey: 'idem_task_retry_current_01',
       taskId: TEST_IDS.taskId,
+      executionId: TEST_IDS.executionId,
       assigneeAgentId: TEST_IDS.agentId,
       expectedRevision: 3
     }
@@ -191,6 +190,7 @@ describe('canonical pairing and bidirectional Session commands', () => {
       idempotencyKey: 'idem_resource_create_0001',
       projectId: TEST_IDS.projectId,
       taskId: TEST_IDS.taskId,
+      executionId: TEST_IDS.executionId,
       expectedTaskRevision: 1,
       provider: 'example-content',
       externalId: 'document-42',
@@ -200,7 +200,8 @@ describe('canonical pairing and bidirectional Session commands', () => {
       version: '1'
     }
     expect(restRequestSchema.safeParse(create).success).toBe(true)
-    expect(restRequestSchema.safeParse({ ...create, taskId: undefined, expectedTaskRevision: undefined }).success).toBe(true)
+    expect(restRequestSchema.safeParse({ ...create, taskId: undefined, executionId: undefined,
+      expectedTaskRevision: undefined }).success).toBe(true)
     expect(restRequestSchema.safeParse({ ...create, expectedTaskRevision: undefined }).success).toBe(false)
     expect(restRequestSchema.safeParse({ ...create, taskId: undefined }).success).toBe(false)
     expect(restRequestSchema.safeParse({ ...create, body: 'document body' }).success).toBe(false)
@@ -229,6 +230,7 @@ describe('canonical pairing and bidirectional Session commands', () => {
     const progress = {
       protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'task.progress.report',
       idempotencyKey: 'idem_task_progress_report_01', taskId: TEST_IDS.taskId,
+      executionId: TEST_IDS.executionId,
       expectedRevision: 2, percent: 40, summary: '输入校验完成。'
     }
     expect(restRequestSchema.safeParse(progress).success).toBe(true)
@@ -240,7 +242,8 @@ describe('canonical pairing and bidirectional Session commands', () => {
       type: 'rest.entity', entity: projectCapabilityDirectoryFixture }).success).toBe(true)
     const transition = {
       protocolVersion: '1.0', requestId: TEST_IDS.requestId, type: 'task.transition',
-      idempotencyKey: 'idem_task_terminal_contract_01', taskId: TEST_IDS.taskId, expectedRevision: 3
+      idempotencyKey: 'idem_task_terminal_contract_01', taskId: TEST_IDS.taskId,
+      executionId: TEST_IDS.executionId, expectedRevision: 3
     }
     expect(restRequestSchema.safeParse({ ...transition, status: 'succeeded' }).success).toBe(false)
     expect(restRequestSchema.safeParse({ ...transition, status: 'succeeded', resultSummary: 'Bounded result.' }).success).toBe(true)
