@@ -121,6 +121,11 @@ workspace-server installed-entry helper binds declarations to runtime values. Pa
 `kind:id`; missing, extra, duplicate, or mismatched entries fail before contributions are exposed.
 There is deliberately no cross-process runtime bundle and no dynamic package loader.
 
+Trusted packages default to `"composition": "production"`. A package that exists solely as a
+development or contract-test fixture must declare `"composition": "development-only"`; discovery
+still validates and tests that package, while generated production definition and process
+compositions omit it generically.
+
 ## Renderer contributions
 
 `@sciforge/domain-sdk/renderer-contributions` is the public boundary for package-owned Workbench
@@ -257,6 +262,14 @@ Node-only domain services use stable SDK subpaths for shared host-independent ru
 - `@sciforge/domain-sdk/node/electron-node-executable` resolves the executable used with
   `ELECTRON_RUN_AS_NODE`, including the packaged macOS Helper path and direct Windows/Linux
   executable paths.
+- `@sciforge/domain-sdk/node/runtime-mcp-launcher` resolves the single generated domain MCP
+  executable in source and packaged applications and carries the manifest contribution selector.
+
+A trusted package that declares `main.runtime-mcp-server` exports the conventional
+`./runtime-mcp` subpath with `runDomainRuntimeMcpServerFromArgv`. The domain package generator
+validates that pairing and emits the contribution-ID-to-runner composition. Electron therefore
+builds one stable `domain-runtime-mcp-node-entry` rather than one Host-configured entry per domain.
+Removing the contribution or package removes its runner on the next composition generation.
 
 Keeping these implementations in the SDK gives host services and domain packages one shared
 boundary instead of copied platform or security logic.

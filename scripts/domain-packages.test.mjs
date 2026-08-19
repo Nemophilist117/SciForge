@@ -34,7 +34,7 @@ test('sorts packages by packageName and omits undeclared process imports', async
   assert.doesNotMatch(generated['src/main/modules/installed-domain-main.ts'], /a-renderer-only/)
   assert.match(
     generated['src/main/modules/installed-domain-main.ts'],
-    /const \{ capabilityInvokerFor, packageStorageFor, \.\.\.sharedHost \} = host/
+    /capabilityInvokerFor,\n {4}packageStorageFor,\n {4}fileTransfersFor,\n {4}externalNavigationFor,\n {4}portableResourcesFor,\n {4}internalServicesFor,\n {4}\.\.\.sharedHost/
   )
   assert.match(
     generated['src/main/modules/installed-domain-main.ts'],
@@ -42,7 +42,7 @@ test('sorts packages by packageName and omits undeclared process imports', async
   )
   assert.match(
     generated['src/main/modules/installed-domain-main.ts'],
-    /return \{\n {6}\.\.\.sharedHost,\n {6}capabilities: capabilityInvokerFor\(owner\),\n {6}packageSettings: packageStorage\.settings,\n {6}packageSecrets: packageStorage\.secrets,/
+    /return \{\n {6}\.\.\.sharedHost,\n {6}capabilities: capabilityInvokerFor\(owner\),\n {6}packageSettings: packageStorage\.settings,\n {6}packageSecrets: packageStorage\.secrets,\n {6}\.\.\.\(fileTransfersFor \? \{ fileTransfers: fileTransfersFor\(owner\) \} : \{\}\),\n {6}\.\.\.\(externalNavigationFor \? \{ externalNavigation: externalNavigationFor\(owner\) \} : \{\}\),\n {6}\.\.\.\(portableResourcesFor \? \{ portableResources: portableResourcesFor\(owner\) \} : \{\}\),\n {6}\.\.\.\(internalServicesFor \? \{ internalServices: internalServicesFor\(owner\) \} : \{\}\),/
   )
   assert.doesNotMatch(
     generated['src/main/modules/installed-domain-main.ts'],
@@ -54,9 +54,48 @@ test('sorts packages by packageName and omits undeclared process imports', async
     generated['src/renderer/src/domain-modules/installed-domain-renderer.ts'],
     /remoteWorkspace\.attach\(input\)/
   )
+  assert.match(
+    generated['src/renderer/src/domain-modules/installed-domain-renderer.ts'],
+    /createDomainRendererEntry0\(domainHostFor\("@fixture\/a-renderer-only"\)\)/
+  )
+  assert.match(
+    generated['src/renderer/src/domain-modules/installed-domain-renderer.ts'],
+    /fileTransfers: rendererFileTransferHostFor\(ownerId\)/
+  )
   assert.doesNotMatch(
     generated['packages/workers/workspace-host/src/generated/installed-domain-workspace-server.ts'],
     /@fixture/
+  )
+})
+
+test('validates development fixtures without projecting them into production', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sciforge-domain-generator-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await createFixture(root, 'production', {
+    packageName: '@fixture/production',
+    process: 'main'
+  })
+  await createFixture(root, 'development-only', {
+    packageName: '@fixture/development-only',
+    process: 'main',
+    composition: 'development-only'
+  })
+
+  const packages = await discoverDomainPackages(root, {
+    parseDefinition: (definition) => definition
+  })
+  const generated = renderGeneratedDomainPackageFiles(packages)
+
+  assert.deepEqual(packages.map(({ packageName }) => packageName), [
+    '@fixture/development-only',
+    '@fixture/production'
+  ])
+  for (const content of Object.values(generated)) {
+    assert.doesNotMatch(content, /@fixture\/development-only/)
+  }
+  assert.match(
+    generated['src/main/modules/installed-domain-main.ts'],
+    /@fixture\/production\/main/
   )
 })
 
@@ -101,6 +140,54 @@ test('projects only workspace-server process entries into the server composition
   assert.doesNotMatch(server, /@fixture\/desktop-only/)
   assert.doesNotMatch(server, /\/main'/)
   assert.doesNotMatch(server, /\/renderer'/)
+})
+
+test('generates one contribution-keyed runtime MCP launcher composition', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sciforge-domain-generator-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await createFixture(root, 'runtime-mcp', {
+    packageName: '@fixture/runtime-mcp',
+    process: 'main',
+    contributions: [{
+      id: 'fixture.runtime-mcp-server',
+      kind: 'main.runtime-mcp-server'
+    }]
+  })
+  await createFixture(root, 'ordinary', {
+    packageName: '@fixture/ordinary',
+    process: 'main'
+  })
+
+  const packages = await discoverDomainPackages(root, {
+    parseDefinition: (definition) => definition
+  })
+  const runtimeMcp = renderGeneratedDomainPackageFiles(packages)[
+    'src/main/modules/installed-domain-runtime-mcp.ts'
+  ]
+
+  assert.match(runtimeMcp, /@fixture\/runtime-mcp\/runtime-mcp/)
+  assert.match(runtimeMcp, /"fixture\.runtime-mcp-server": runDomainRuntimeMcpServer/)
+  assert.match(runtimeMcp, /selectedDomainRuntimeMcpContributionId/)
+  assert.doesNotMatch(runtimeMcp, /@fixture\/ordinary/)
+})
+
+test('fails closed when a runtime MCP contribution omits its conventional runner', async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sciforge-domain-generator-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await createFixture(root, 'broken-runtime-mcp', {
+    packageName: '@fixture/broken-runtime-mcp',
+    process: 'main',
+    contributions: [{
+      id: 'fixture.broken-runtime-mcp-server',
+      kind: 'main.runtime-mcp-server'
+    }],
+    createRuntimeMcpExport: false
+  })
+
+  await assert.rejects(
+    discoverDomainPackages(root, { parseDefinition: (definition) => definition }),
+    /must expose \.\/runtime-mcp exactly when it declares main\.runtime-mcp-server/
+  )
 })
 
 test('fails closed when a process entry does not export its conventional factory', async (context) => {
@@ -390,6 +477,7 @@ async function createFixture(root, directoryName, options) {
   const manifest = {
     contractVersion: 1,
     kind: 'trusted-compile-time',
+    ...(options.composition ? { composition: options.composition } : {}),
     packageName: options.packageName,
     module: {
       id: `fixture.${directoryName}`,
@@ -402,6 +490,13 @@ async function createFixture(root, directoryName, options) {
     ...(options.packaging ? { packaging: options.packaging } : {}),
     entrypoints
   }
+  const runtimeMcpContributions = entrypoints.flatMap((entrypoint) =>
+    entrypoint.process === 'main'
+      ? entrypoint.contributions.filter(({ kind }) => kind === 'main.runtime-mcp-server')
+      : []
+  )
+  const createRuntimeMcpExport = runtimeMcpContributions.length > 0 &&
+    options.createRuntimeMcpExport !== false
   await writeFile(path.join(packageRoot, 'sciforge.domain.json'), JSON.stringify(manifest))
   await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({
     name: options.packageName,
@@ -412,7 +507,10 @@ async function createFixture(root, directoryName, options) {
       ...Object.fromEntries(processes.map((processName) => [
         `./${processName}`,
         `./src/${processName}.ts`
-      ]))
+      ])),
+      ...(createRuntimeMcpExport
+        ? { './runtime-mcp': './src/runtime-mcp.ts' }
+        : {})
     },
     scripts: { test: 'node --test', typecheck: 'tsc --noEmit' }
   }))
@@ -430,6 +528,12 @@ async function createFixture(root, directoryName, options) {
     await writeFile(
       path.join(packageRoot, `src/${processName}.ts`),
       `export function ${factoryName}() { return {} }\n`
+    )
+  }
+  if (createRuntimeMcpExport) {
+    await writeFile(
+      path.join(packageRoot, 'src/runtime-mcp.ts'),
+      'export async function runDomainRuntimeMcpServerFromArgv() {}\n'
     )
   }
   if (options.createRequiredPaths !== false) {

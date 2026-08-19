@@ -23,7 +23,6 @@ import type {
 import {
   createAgentRuntimeCapabilityMatrix,
   createDefaultAgentRuntimeCapabilities,
-  filterAgentRuntimeThreadChildren,
   projectAgentRuntimeThreadSummary
 } from '../../../shared/agent-runtime-contract'
 import {
@@ -37,6 +36,7 @@ import {
   boundAgentRuntimeEventForDelivery,
   externalizeToolDetails
 } from '../agent-runtime/jsonl-thread-page'
+import { BoundedAgentRuntimeChildHistory } from '../agent-runtime/bounded-child-history'
 import {
   EXECUTION_INTEGRITY_POLICY_METADATA_KEY,
   EXECUTION_INTEGRITY_POLICY_VERSION,
@@ -48,12 +48,6 @@ import {
   type AgentSubagentSettingsV1,
   type AppSettingsV1
 } from '../../../shared/app-settings'
-import {
-  COMPUTER_USE_MCP_TOOL_NAME,
-  configuredComputerUseCapability,
-  GUI_COMPUTER_USE_MCP_SERVER_NAME,
-  unavailableComputerUseCapability
-} from '../../computer-use-mcp-config'
 
 export function createCodexAgentRuntimeAdapter(service: CodexRuntimeService): AgentRuntimeAdapter {
   return {
@@ -61,9 +55,11 @@ export function createCodexAgentRuntimeAdapter(service: CodexRuntimeService): Ag
     transport: 'jsonrpc_stdio',
     subagents: {
       spawn: (_context, input) => service.spawnSubagent(input),
+      resume: (_context, input) => service.resumeSubagent(input),
       inspect: (_context, input) => service.inspectSubagent(input),
       message: (_context, input) => service.messageSubagent(input),
-      cancel: (_context, input) => service.cancelSubagent(input)
+      cancel: (_context, input) => service.cancelSubagent(input),
+      delete: (_context, input) => service.deleteSubagent(input)
     },
 
     async connect() {
@@ -302,6 +298,7 @@ export function createCodexAgentRuntimeAdapter(service: CodexRuntimeService): Ag
             threadId,
             parentTurnId: stringValue(payload.parentTurnId) || stringValue(payload.turnId),
             activeOnly: payload.activeOnly === true,
+            cursor: stringValue(payload.cursor),
             limit: numberValue(payload.limit)
           })
         }
@@ -331,7 +328,6 @@ export function createCodexAgentRuntimeAdapter(service: CodexRuntimeService): Ag
 type CodexMcpState = {
   mcpConfigured: boolean
   researchConfigured: boolean
-  computerUseConfigured: boolean
   subagents: AgentSubagentSettingsV1
   toolUnavailableDiagnostics: CodexMcpToolUnavailableDiagnostic[]
 }
@@ -349,7 +345,6 @@ type CodexMcpToolUnavailableDiagnostic = {
 const emptyCodexMcpState: CodexMcpState = {
   mcpConfigured: false,
   researchConfigured: false,
-  computerUseConfigured: false,
   subagents: normalizeAgentCapabilitySettings(undefined).subagents,
   toolUnavailableDiagnostics: []
 }
@@ -357,16 +352,13 @@ const emptyCodexMcpState: CodexMcpState = {
 function serviceMcpState(service: CodexRuntimeService, settings?: AppSettingsV1): CodexMcpState {
   const researchConfigured =
     typeof service.isResearchMcpConfigured === 'function' && service.isResearchMcpConfigured()
-  const computerUseConfigured =
-    typeof service.isComputerUseMcpConfigured === 'function' && service.isComputerUseMcpConfigured(settings)
   const mcpConfigured =
     typeof service.isMcpConfigured === 'function'
-      ? (researchConfigured || computerUseConfigured || service.isMcpConfigured())
-      : (researchConfigured || computerUseConfigured)
+      ? (researchConfigured || service.isMcpConfigured())
+      : researchConfigured
   return {
     mcpConfigured,
     researchConfigured,
-    computerUseConfigured,
     subagents: normalizeAgentCapabilitySettings(settings?.agentCapabilities).subagents,
     toolUnavailableDiagnostics: codexMcpToolUnavailableDiagnostics(service)
   }
@@ -375,7 +367,7 @@ function serviceMcpState(service: CodexRuntimeService, settings?: AppSettingsV1)
 function codexCapabilities(state: CodexMcpState = emptyCodexMcpState): AgentRuntimeCapabilities {
   const unavailable = { available: false, reason: 'unsupported' }
   const mcpDiagnosticsReason = 'Codex MCP diagnostics are not exposed through this service yet.'
-  const configuredMcpToolCount = Number(state.researchConfigured) + Number(state.computerUseConfigured)
+  const configuredMcpToolCount = Number(state.researchConfigured)
   const caps = createDefaultAgentRuntimeCapabilities({
     runtimeId: 'codex',
     transport: 'jsonrpc_stdio'
@@ -444,9 +436,7 @@ function codexCapabilities(state: CodexMcpState = emptyCodexMcpState): AgentRunt
             maxResults: 10
           }
         : { available: false, reason: 'Shared research MCP server is not configured for Codex yet.' },
-      computerUse: state.computerUseConfigured
-        ? configuredComputerUseCapability()
-        : unavailableComputerUseCapability('GUI-Owl computer-use MCP server is not configured for Codex.'),
+      computerUse: { available: false, reason: 'Computer Use is exposed through the managed capability broker.' },
       skills: { available: false, reason: 'Codex skills are not exposed through this service yet.' },
       subagents: state.subagents.enabled
         ? {
@@ -487,7 +477,7 @@ function codexCapabilities(state: CodexMcpState = emptyCodexMcpState): AgentRunt
 
 function codexRuntimeInfo(state: CodexMcpState = emptyCodexMcpState): Record<string, unknown> {
   const caps = codexCapabilities(state)
-  const configuredMcpToolCount = Number(state.researchConfigured) + Number(state.computerUseConfigured)
+  const configuredMcpToolCount = Number(state.researchConfigured)
   return {
     host: 'codex',
     port: 0,
@@ -516,10 +506,7 @@ function codexRuntimeInfo(state: CodexMcpState = emptyCodexMcpState): Record<str
         connectedServers: 0,
         toolCount: caps.tools.mcp.toolCount ?? 0,
         unavailableToolCount: state.toolUnavailableDiagnostics.length,
-        computerUse: {
-          enabled: state.computerUseConfigured,
-          available: state.computerUseConfigured
-        },
+        computerUse: { enabled: false, available: false },
         search: {
           enabled: false,
           mode: 'direct',
@@ -572,14 +559,6 @@ function codexToolDiagnostics(state: CodexMcpState = emptyCodexMcpState): Record
       status: 'configured',
       toolCount: 1,
       tools: ['research_search']
-    })
-  }
-  if (state.computerUseConfigured) {
-    mcpServers.push({
-      id: GUI_COMPUTER_USE_MCP_SERVER_NAME,
-      status: 'configured',
-      toolCount: 1,
-      tools: [COMPUTER_USE_MCP_TOOL_NAME]
     })
   }
   return {
@@ -790,26 +769,26 @@ function mapCodexBlock(
 
 async function listCodexThreadChildren(
   service: CodexRuntimeService,
-  input: { threadId: string; parentTurnId?: string; activeOnly?: boolean; limit?: number }
+  input: { threadId: string; parentTurnId?: string; activeOnly?: boolean; cursor?: string; limit?: number }
 ): Promise<AgentRuntimeListThreadChildrenResponse> {
   const children = await codexChildrenFromThreadEvents(service, input.threadId)
-  const filtered = filterAgentRuntimeThreadChildren(children, {
-    runtimeId: 'codex',
-    parentThreadId: input.threadId,
-    ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
-    ...(input.activeOnly ? { activeOnly: true } : {})
-  })
-  const limited = typeof input.limit === 'number' && input.limit > 0
-    ? filtered.slice(0, Math.floor(input.limit))
-    : filtered
-  return {
+  const history = new BoundedAgentRuntimeChildHistory()
+  for (const child of children) history.upsert(child)
+  const page = history.page({
     runtimeId: 'codex',
     threadId: input.threadId,
     ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
-    children: limited,
+    ...(input.activeOnly ? { activeOnly: true } : {}),
+    ...(input.cursor ? { cursor: input.cursor } : {}),
+    ...(input.limit ? { limit: input.limit } : {})
+  })
+  return {
+    ...page,
     metadata: {
+      ...page.metadata,
       source: 'codex-app-server-events',
-      totalChildren: filtered.length
+      totalChildren: children.length,
+      retainedChildren: children.length
     }
   }
 }
@@ -824,11 +803,11 @@ async function readCodexChildTranscript(
     limit?: number
   }
 ): Promise<AgentRuntimeReadChildTranscriptResponse> {
-  const children = await listCodexThreadChildren(service, {
-    threadId: input.parentThreadId,
-    ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {})
-  })
-  const child = children.children.find((candidate) => candidate.id === input.childId)
+  const exactChild = typeof service.findStoredThreadChild === 'function'
+    ? await service.findStoredThreadChild(input.parentThreadId, input.childId)
+    : null
+  const child = exactChild ??
+    (await codexChildrenFromThreadEvents(service, input.parentThreadId)).find((candidate) => candidate.id === input.childId)
   if (!child) {
     return degradedCodexChildTranscript(input, null, 'Codex child was not found on the parent thread.')
   }
@@ -887,7 +866,7 @@ async function codexChildrenFromThreadEvents(
   const [storedChildren, threadsResult] = await Promise.all([
     service.listStoredThreadChildren(threadId),
     typeof service.listThreads === 'function'
-      ? service.listThreads({ includeArchived: true, includeSide: true })
+      ? service.listThreads({ includeSide: true, limit: 200 })
       : Promise.resolve(null)
   ])
   if (threadsResult?.ok) {
@@ -926,6 +905,7 @@ function childFromCodexThread(
   thread: CodexNormalizedThread,
   parentThreadId: string
 ): AgentRuntimeChild | null {
+  if (thread.archived === true) return null
   if (thread.id === parentThreadId) return null
   if (thread.parentThreadId !== parentThreadId) return null
   const threadSource = normalizedCodexChildSource(thread.threadSource)

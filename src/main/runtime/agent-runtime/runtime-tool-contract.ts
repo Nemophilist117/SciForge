@@ -9,6 +9,8 @@ export type RuntimeToolFunctionDefinition = {
   namespace?: string
   /** Stable internal provider identity. */
   providerId?: string
+  /** Canonical package identity for least-privilege broker scoping. */
+  providerPackageName?: string
   /** Original provider tool name. */
   providerToolName?: string
   name: string
@@ -34,6 +36,21 @@ export type RuntimeToolCallRequest = {
   namespace?: string
   tool: string
   arguments: unknown
+  /** Host-only policy inherited by delegated child execution. */
+  delegationContext?: {
+    allowedToolNames?: readonly string[]
+    brokerScope?: Readonly<{ providerFamily: 'managed-mcp'; packageName?: string }>
+  }
+  trustedInvocation?: {
+    requestId: string
+    runtimeId: string
+    threadId: string
+    turnId?: string
+    callId?: string
+    actionId: string
+    invocationId?: string
+    approval: 'none' | 'confirmation' | 'system'
+  }
 }
 
 export type RuntimeToolOutputContentItem =

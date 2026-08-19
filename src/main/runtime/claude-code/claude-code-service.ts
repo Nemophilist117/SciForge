@@ -30,8 +30,9 @@ import type {
   AgentRuntimeUsageResponse
 } from '../../../shared/agent-runtime-contract'
 import {
-  filterAgentRuntimeThreadChildren
-} from '../../../shared/agent-runtime-contract'
+  BoundedAgentRuntimeChildHistory,
+  touchBoundedThreadCache
+} from '../agent-runtime/bounded-child-history'
 import {
   resolveModelAccessRuntimePolicy,
   resolveRuntimeModelRouterSettings,
@@ -42,17 +43,16 @@ import {
   resolveClaudeWorkspace
 } from './claude-code-config'
 import {
-  isComputerUseMcpConfigured,
-} from '../../computer-use-mcp-config'
-import {
-  filterAgentRuntimeToolSurface,
   nativeAgentToolExecutionMetadata,
+  scopeAgentRuntimeToolSurface,
   type AgentRuntimeToolSurface
 } from '../agent-runtime/agent-tool-surface'
 import type {
   AgentRuntimeSubagentCancelInput,
+  AgentRuntimeSubagentDeleteInput,
   AgentRuntimeSubagentInspectInput,
   AgentRuntimeSubagentMessageInput,
+  AgentRuntimeSubagentResumeInput,
   AgentRuntimeSubagentResult,
   AgentRuntimeSubagentSpawnInput,
   AgentRuntimeSubagentTranscriptEntry,
@@ -254,8 +254,7 @@ export class ClaudeCodeRuntimeService {
   private readonly activeTurns = new Map<string, ActiveClaudeTurn>()
   private readonly turnGovernanceSnapshots = new Map<string, AgentRuntimeTurnGovernanceSnapshot>()
   private readonly eventSubscribers = new Set<ClaudeRuntimeEventSubscriber>()
-  private readonly childState = new Map<string, AgentRuntimeChild>()
-  private readonly childStateInitializers = new Map<string, Promise<void>>()
+  private readonly childState = new Map<string, Promise<BoundedAgentRuntimeChildHistory>>()
   private readonly activeSubagents = new Map<string, ActiveClaudeSubagent>()
 
   constructor(private readonly options: ClaudeCodeRuntimeServiceOptions) {
@@ -265,9 +264,6 @@ export class ClaudeCodeRuntimeService {
     this.sessionStore = new ClaudeCodeSessionStore({ rootDir: options.storageRoot })
   }
 
-  isComputerUseMcpConfigured(settings?: AppSettingsV1): boolean {
-    return isComputerUseMcpConfigured(settings, 'claude')
-  }
 
   async connect(): Promise<ClaudeCodeConnectResult> {
     try {
@@ -404,6 +400,8 @@ export class ClaudeCodeRuntimeService {
     workspace?: string
     reasoningEffort?: string
     allowedTools?: string[]
+    brokerScope?: Readonly<{ providerFamily: 'managed-mcp'; packageName?: string }>
+    maxToolCalls?: number
     ownedVisualToolsAvailable?: boolean
     nativeVisualProofChainPending?: boolean
     streamingInput?: boolean
@@ -466,7 +464,11 @@ export class ClaudeCodeRuntimeService {
       })
       const abortController = new AbortController()
       const agentToolSurface = this.options.agentTools
-        ? filterAgentRuntimeToolSurface(this.options.agentTools, payload.allowedTools)
+        ? scopeAgentRuntimeToolSurface(this.options.agentTools, {
+            allowedTools: payload.allowedTools,
+            brokerScope: payload.brokerScope,
+            maxToolCalls: payload.maxToolCalls
+          })
         : undefined
       const agentToolServer = agentToolSurface && agentToolSurface.tools().length > 0
         ? createClaudeCodeAgentToolTransport({
@@ -597,12 +599,41 @@ export class ClaudeCodeRuntimeService {
       title: input.label || firstLineTitle(input.prompt)
     })
     if (!threadResult.ok) throw new Error(threadResult.message)
+    let startupCommitted = false
+    try {
+      return await this.runClaudeSubagentTurn(input, threadResult.thread.id, () => {
+        startupCommitted = true
+      })
+    } catch (error) {
+      if (startupCommitted) throw error
+      this.activeSubagents.delete(input.childId)
+      const cleanup = await this.deleteThread(threadResult.thread.id)
+      if (!cleanup.ok) {
+        throw childStartupRollbackError('Claude', error, new Error(cleanup.message))
+      }
+      throw error
+    }
+  }
+
+  async resumeSubagent(input: AgentRuntimeSubagentResumeInput): Promise<AgentRuntimeSubagentResult> {
+    return this.runClaudeSubagentTurn(input, input.threadRef.threadId)
+  }
+
+  private async runClaudeSubagentTurn(
+    input: AgentRuntimeSubagentSpawnInput,
+    threadId: string,
+    onStartupCommitted?: () => void
+  ): Promise<AgentRuntimeSubagentResult> {
+    await input.onThreadBound({ runtime: 'claude', threadId })
     const turnResult = await this.startTurn({
-      threadId: threadResult.thread.id,
+      threadId,
       text: input.prompt,
       displayText: input.prompt,
       workspace: input.workspace,
-      streamingInput: true
+      streamingInput: true,
+      ...(input.allowedTools ? { allowedTools: [...input.allowedTools] } : {}),
+      ...(input.brokerScope ? { brokerScope: input.brokerScope } : {}),
+      ...(input.maxToolCalls ? { maxToolCalls: input.maxToolCalls } : {})
     })
     if (!turnResult.ok) throw new Error(turnResult.message)
     const active: ActiveClaudeSubagent = {
@@ -619,13 +650,14 @@ export class ClaudeCodeRuntimeService {
       turnId: active.turnId
     })
     await input.appendTranscript({
-      id: `${input.childId}-thread-start`,
+      id: `${input.childId}-${active.turnId}-thread-start`,
       kind: 'event',
       summary: 'Claude child thread started',
       text: `Thread: ${active.threadId}`,
       createdAt: new Date().toISOString(),
       metadata: { threadId: active.threadId, turnId: active.turnId }
     })
+    onStartupCommitted?.()
 
     const transcript: AgentRuntimeSubagentTranscriptEntry[] = []
     const summary: string[] = []
@@ -723,6 +755,18 @@ export class ClaudeCodeRuntimeService {
     if (!result.ok) throw new Error(result.message)
   }
 
+  async deleteSubagent(input: AgentRuntimeSubagentDeleteInput): Promise<void> {
+    const active = this.activeSubagents.get(input.childId)
+    if (active) {
+      const interrupted = await this.interruptTurn(active.threadId, active.turnId)
+      if (!interrupted.ok) throw new Error(interrupted.message)
+    }
+    const threadId = input.threadRef?.threadId
+    if (!threadId) return
+    const deleted = await this.deleteThread(threadId)
+    if (!deleted.ok) throw new Error(deleted.message)
+  }
+
   updateTurnGovernanceSnapshot(input: AgentRuntimeTurnGovernanceSnapshotInput): void {
     if (input.runtimeId !== 'claude') return
     const active = this.activeTurns.get(input.threadId)
@@ -801,20 +845,15 @@ export class ClaudeCodeRuntimeService {
     cursor?: string
     limit?: number
   }): Promise<AgentRuntimeListThreadChildrenResponse> {
-    const children = await this.childrenForThread(input.threadId)
-    const filtered = filterAgentRuntimeThreadChildren(children, {
-      runtimeId: 'claude',
-      parentThreadId: input.threadId,
-      ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
-      ...(input.activeOnly ? { activeOnly: true } : {})
-    })
-      .slice(0, Math.max(0, Math.floor(input.limit ?? 100)))
-    return {
+    const history = await this.childHistoryForThread(input.threadId)
+    return history.page({
       runtimeId: 'claude',
       threadId: input.threadId,
       ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
-      children: filtered
-    }
+      ...(input.activeOnly ? { activeOnly: true } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.limit ? { limit: input.limit } : {})
+    })
   }
 
   async readChildTranscript(input: {
@@ -825,14 +864,13 @@ export class ClaudeCodeRuntimeService {
     cursor?: string
     limit?: number
   }): Promise<AgentRuntimeReadChildTranscriptResponse> {
-    const children = await this.childrenForThread(input.parentThreadId)
-    const child = children.find((candidate) =>
-      candidate.id === input.childId &&
-      (input.parentTurnId ? candidate.parentTurnId === input.parentTurnId : true)
-    )
-    const ref = optionalRecord(input.transcriptRef) ?? optionalRecord(child?.transcriptRef) ?? {}
+    const child = await this.latestStoredChild(input.parentThreadId, input.childId)
+    const matchedChild = child && (input.parentTurnId ? child.parentTurnId === input.parentTurnId : true)
+      ? child
+      : null
+    const ref = optionalRecord(input.transcriptRef) ?? optionalRecord(matchedChild?.transcriptRef) ?? {}
     const metadata = recordValue(ref.metadata)
-    const childMetadata = recordValue(child?.metadata)
+    const childMetadata = recordValue(matchedChild?.metadata)
     const sessionId = firstString(
       metadata.sessionId,
       metadata.session_id,
@@ -855,18 +893,20 @@ export class ClaudeCodeRuntimeService {
       ? await this.sessionStore.readTranscript({ sessionId, subpath })
       : null
     if (!transcript) {
-      const childKindLabel = child?.kind === 'workflow' ? 'workflow' : 'subagent'
+      const childKindLabel = matchedChild?.kind === 'workflow' ? 'workflow' : 'subagent'
       return {
         transcript: {
           runtimeId: 'claude',
           parentThreadId: input.parentThreadId,
           ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
           childId: input.childId,
-          ...(child ? { child } : {}),
-          ...(child?.transcriptRef || Object.keys(ref).length > 0 ? { transcriptRef: child?.transcriptRef ?? ref } : {}),
-          entries: degradedChildTranscriptEntries(input.childId, child ?? null),
-          summary: child?.summary,
-          usage: child?.usage,
+          ...(matchedChild ? { child: matchedChild } : {}),
+          ...(matchedChild?.transcriptRef || Object.keys(ref).length > 0
+            ? { transcriptRef: matchedChild?.transcriptRef ?? ref }
+            : {}),
+          entries: degradedChildTranscriptEntries(input.childId, matchedChild),
+          summary: matchedChild?.summary,
+          usage: matchedChild?.usage,
           degraded: true,
           reason: sessionId
             ? `Claude ${childKindLabel} transcript ${subpath}.jsonl has not been mirrored yet.`
@@ -883,8 +923,8 @@ export class ClaudeCodeRuntimeService {
         parentThreadId: input.parentThreadId,
         ...(input.parentTurnId ? { parentTurnId: input.parentTurnId } : {}),
         childId: input.childId,
-        ...(child ? { child } : {}),
-        transcriptRef: child?.transcriptRef ?? transcriptRef({
+        ...(matchedChild ? { child: matchedChild } : {}),
+        transcriptRef: matchedChild?.transcriptRef ?? transcriptRef({
           childId: input.childId,
           sessionId: transcript.key.sessionId,
           projectKey: transcript.key.projectKey,
@@ -892,8 +932,8 @@ export class ClaudeCodeRuntimeService {
           path: transcript.path
         }),
         entries,
-        summary: child?.summary,
-        usage: child?.usage,
+        summary: matchedChild?.summary,
+        usage: matchedChild?.usage,
         metadata: {
           source: 'claude-agent-sdk.sessionStore',
           path: transcript.path,
@@ -1928,10 +1968,10 @@ export class ClaudeCodeRuntimeService {
   private async emitChild(child: AgentRuntimeChild): Promise<void> {
     const normalized = normalizeClaudeChild(child, child.parentThreadId)
     if (!normalized) return
-    const key = childStateKey(normalized.parentThreadId, normalized.id)
-    const existing = this.childState.get(key) ?? await this.latestStoredChild(normalized.parentThreadId, normalized.id)
+    const history = await this.childHistoryForThread(normalized.parentThreadId)
+    const existing = history.get(normalized.id) ?? await this.latestStoredChild(normalized.parentThreadId, normalized.id)
     const next = mergeChild(existing, normalized)
-    this.childState.set(key, next)
+    history.upsert(next)
     await this.emit({
       threadId: next.parentThreadId,
       turnId: next.parentTurnId,
@@ -1941,37 +1981,32 @@ export class ClaudeCodeRuntimeService {
   }
 
   private async latestStoredChild(threadId: string, childId: string): Promise<AgentRuntimeChild | null> {
-    return (await this.childrenForThread(threadId)).find((child) => child.id === childId) ?? null
+    const cached = (await this.childHistoryForThread(threadId)).get(childId)
+    return cached ?? this.eventStore.findLatestChild(threadId, childId)
   }
 
-  private async childrenForThread(threadId: string): Promise<AgentRuntimeChild[]> {
-    await this.ensureChildStateInitialized(threadId)
-    return [...this.childState.values()]
-      .filter((child) => child.parentThreadId === threadId)
-      .sort((a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? '') - Date.parse(a.updatedAt ?? a.createdAt ?? ''))
+  private async childHistoryForThread(threadId: string): Promise<BoundedAgentRuntimeChildHistory> {
+    let history = this.childState.get(threadId)
+    if (!history) history = this.loadStoredChildState(threadId)
+    touchBoundedThreadCache(this.childState, threadId, history)
+    return history
   }
 
-  private async ensureChildStateInitialized(threadId: string): Promise<void> {
-    let initializer = this.childStateInitializers.get(threadId)
-    if (!initializer) {
-      initializer = this.loadStoredChildState(threadId)
-      this.childStateInitializers.set(threadId, initializer)
-    }
-    await initializer
+  private async loadStoredChildState(threadId: string): Promise<BoundedAgentRuntimeChildHistory> {
+    const history = new BoundedAgentRuntimeChildHistory()
+    for (const child of await this.eventStore.readLatestChildren(threadId)) history.upsert(child)
+    return history
   }
 
-  private async loadStoredChildState(threadId: string): Promise<void> {
-    for (const stored of await this.eventStore.read(threadId, { includeAll: true })) {
-      this.noteChildEvent(stored.event)
-    }
-  }
-
-  private noteChildEvent(event: AgentRuntimeEvent): void {
+  private noteChildEvent(history: BoundedAgentRuntimeChildHistory, event: AgentRuntimeEvent): void {
     if (event.kind !== 'child_event') return
     const child = normalizeClaudeChild(event.child, event.threadId)
     if (!child) return
-    const key = childStateKey(child.parentThreadId, child.id)
-    this.childState.set(key, mergeChild(this.childState.get(key), child))
+    if (child.metadata?.lifecycleOperation === 'delete') {
+      history.delete(child.id)
+      return
+    }
+    history.upsert(mergeChild(history.get(child.id), child))
   }
 
   private async completeTurn(
@@ -2025,7 +2060,8 @@ export class ClaudeCodeRuntimeService {
 
   private async emit(event: AgentRuntimeEvent): Promise<ClaudeCodeStoredEvent> {
     const stored = await this.eventStore.append(event.threadId, event)
-    this.noteChildEvent(stored.event)
+    const pendingHistory = this.childState.get(stored.threadId)
+    if (pendingHistory) this.noteChildEvent(await pendingHistory, stored.event)
     const latestSeq = stored.seq
     const thread = await this.threadStore.get(stored.threadId)
     if (thread) {
@@ -2258,10 +2294,6 @@ function claudeChildKind(value: unknown): AgentRuntimeChild['kind'] {
   return 'agent'
 }
 
-function childStateKey(threadId: string, childId: string): string {
-  return `${threadId}\n${childId}`
-}
-
 function mergeChild(
   previous: AgentRuntimeChild | null | undefined,
   next: AgentRuntimeChild
@@ -2364,6 +2396,15 @@ function failure(error: unknown, defaultCode = 'claude_runtime_error'): ClaudeCo
     code: (error as NodeJS.ErrnoException)?.code || defaultCode,
     recoverable: true
   }
+}
+
+function childStartupRollbackError(runtime: string, primary: unknown, ...cleanup: unknown[]): AggregateError {
+  const error = new AggregateError(
+    [primary, ...cleanup],
+    `${runtime} child startup failed and rollback was incomplete.`
+  )
+  Object.defineProperty(error, 'cause', { value: primary, configurable: true })
+  return error
 }
 
 function stringifyUnknown(value: unknown): string | undefined {

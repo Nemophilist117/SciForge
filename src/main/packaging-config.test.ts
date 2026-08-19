@@ -660,6 +660,7 @@ describe('electron-builder release packaging', () => {
     )
     expect(afterPack.PACKAGED_EXECUTABLE_NODE_ENTRY_REQUIRED_PATHS).toEqual(expect.arrayContaining([
       'out/main/codex-pre-tool-use-governance-node-entry.js',
+      'out/main/domain-runtime-mcp-node-entry.js',
       'out/main/model-router-sidecar-node-entry.js',
       'out/main/plan-gateway-sidecar-node-entry.js',
       'out/main/schedule-mcp-node-entry.js',
@@ -768,7 +769,7 @@ describe('root package workspace contracts', () => {
       'build:execution-governance': 'npm --workspace @sciforge/execution-governance run build',
       'build:full-trace': 'npm --workspace @sciforge/full-trace run build',
       'build:multi-agent': 'npm --workspace @sciforge/multi-agent run build',
-      'build:agent-support': 'npm run build:execution-governance && npm run build:full-trace && npm run build:multi-agent && npm run build:workspace-host',
+      'build:agent-support': 'npm run build:execution-governance && npm run build:full-trace && npm run build:multi-agent && npm run build:workspace-host && npm run build:collaboration-dependencies',
       'build:workspace-host': 'npm --workspace @sciforge/workspace-host run build:artifact',
       'model-router:start': 'npm --workspace @sciforge/model-router run start',
       'model-router:test': 'npm --workspace @sciforge/model-router run test',

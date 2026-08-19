@@ -953,6 +953,53 @@ describe('CollaborationService canonical transactions', () => {
       record.projectRecordId)).rejects.toMatchObject({ code: 'permission_denied' })
   })
 
+  it('isolates Agent registration idempotency from every stable intent field', async () => {
+    const repository = new FakeCollaborationRepository()
+    const service = new CollaborationService({ repository, now })
+    const authentication = new AuthenticationService(repository, now)
+    const alice = await onboard(service, authentication, 'agent-idem-alice', 'provider-agent-idem-alice')
+    const bob = await onboard(service, authentication, 'agent-idem-bob', 'provider-agent-idem-bob')
+    const device = await createDevice(service, alice.user, 'agent-idem-matrix-device')
+    const baseline = {
+      deviceId: device.device.deviceId,
+      displayName: 'Desktop',
+      nodeType: 'desktop',
+      capabilities: ['agent.execute', 'workspace.read'],
+      idempotencyKey: 'idem_agent_register_matrix_baseline'
+    }
+
+    const registered = await service.registerAgent(alice.user, baseline)
+    expect(registered.deviceCredential).toBeTypeOf('string')
+
+    const replayed = await service.registerAgent(alice.user, baseline)
+    expect(replayed).toMatchObject({ agent: { agentId: registered.agent.agentId }, replayed: true })
+    expect(replayed).not.toHaveProperty('deviceCredential')
+    expect(repository.state.agents.size).toBe(1)
+
+    await expect(service.registerAgent(alice.user, {
+      ...baseline,
+      displayName: 'Different body with reused key'
+    })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+
+    const changedIntents = [
+      { ...baseline, displayName: 'Desktop Two', idempotencyKey: 'idem_agent_register_matrix_display' },
+      { ...baseline, nodeType: 'server', idempotencyKey: 'idem_agent_register_matrix_node' },
+      { ...baseline, capabilities: ['agent.execute'], idempotencyKey: 'idem_agent_register_matrix_capability' }
+    ]
+    for (const intent of changedIntents) {
+      const result = await service.registerAgent(alice.user, intent)
+      expect(result).toMatchObject({ agent: { agentId: registered.agent.agentId }, replayed: true })
+      expect(result).not.toHaveProperty('deviceCredential')
+    }
+    expect(repository.state.agents.size).toBe(1)
+
+    await expect(service.registerAgent(bob.user, {
+      ...baseline,
+      idempotencyKey: 'idem_agent_register_matrix_owner'
+    })).rejects.toMatchObject({ code: 'permission_denied' })
+    expect(repository.state.agents.size).toBe(1)
+  })
+
   it('keeps Project task writes star-shaped, idempotent, ordered, and restart-recoverable', async () => {
     const repository = new FakeCollaborationRepository()
     const notifier = new FakeInboxNotifier()

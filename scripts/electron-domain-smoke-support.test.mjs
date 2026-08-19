@@ -1,14 +1,132 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import {
+  CONTENT_SPACE_SMOKE_CAPABILITY_IDS,
+  IDENTITY_SMOKE_CAPABILITY_IDS,
+  REQUIRED_CAPABILITY_IDS,
+  createElectronSmokeTemporaryDirectory,
+  createIdentitySmokeInvocationId,
   createSourceSmokeConfiguration,
   locatePackagedExecutable,
   makeExecutableForTest,
-  parseSmokeCliOptions
+  parseSmokeCliOptions,
+  removeElectronSmokeTemporaryDirectory,
+  validateSmokeResult
 } from './electron-domain-smoke-support.mjs'
+
+test('supervised source smoke keeps its profile inside the owned run directory', async () => {
+  const runDirectory = await mkdtemp(join(tmpdir(), 'sciforge-electron-supervised-run-'))
+  try {
+    const profileDirectory = await createElectronSmokeTemporaryDirectory(runDirectory)
+    assert.equal(
+      profileDirectory,
+      join(resolve(runDirectory), 'profiles/electron-domain-smoke')
+    )
+    await removeElectronSmokeTemporaryDirectory(profileDirectory, runDirectory)
+    await assert.doesNotReject(access(profileDirectory))
+  } finally {
+    await rm(runDirectory, { recursive: true, force: true })
+  }
+})
+
+test('domain smoke requires every Identity and Content Space capability exactly once', () => {
+  assert.deepEqual(IDENTITY_SMOKE_CAPABILITY_IDS, [
+    'identity.local.inspect',
+    'identity.local.list-accounts',
+    'identity.local.create-account',
+    'identity.local.select-account',
+    'identity.local.rename-account',
+    'identity.local.exit-account',
+    'identity.local.dismiss-first-prompt',
+    'identity.local.backup-and-reset'
+  ])
+  assert.deepEqual(CONTENT_SPACE_SMOKE_CAPABILITY_IDS, [
+    'content-space.list-provider-instances',
+    'content-space.describe-capabilities',
+    'content-space.list-containers',
+    'content-space.list-entries',
+    'content-space.observe-entry',
+    'content-space.create-folder',
+    'content-space.upload-new',
+    'content-space.download',
+    'content-space.resolve-portal-target',
+    'content-space.open-portal-target',
+    'content-space.observe-immutable-version'
+  ])
+  assert.equal(new Set(REQUIRED_CAPABILITY_IDS).size, REQUIRED_CAPABILITY_IDS.length)
+  for (const capabilityId of [
+    ...IDENTITY_SMOKE_CAPABILITY_IDS,
+    ...CONTENT_SPACE_SMOKE_CAPABILITY_IDS
+  ]) {
+    assert.equal(REQUIRED_CAPABILITY_IDS.filter((candidate) => candidate === capabilityId).length, 1)
+  }
+})
+
+test('Identity smoke account creation receives a fresh bounded invocation identity', () => {
+  const first = createIdentitySmokeInvocationId(() => '00000000-0000-4000-8000-000000000001')
+  const second = createIdentitySmokeInvocationId(() => '00000000-0000-4000-8000-000000000002')
+
+  assert.equal(first, 'electron-smoke-identity-create-00000000-0000-4000-8000-000000000001')
+  assert.equal(second, 'electron-smoke-identity-create-00000000-0000-4000-8000-000000000002')
+  assert.notEqual(first, second)
+  assert.match(first, /^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/u)
+})
+
+test('smoke result requires the selected Identity and a composed Content Space Provider', () => {
+  const valid = validSmokeResult()
+  assert.doesNotThrow(() => validateSmokeResult(valid, { expectedRendererUrl: valid.url }))
+  assert.throws(
+    () => validateSmokeResult({ ...valid, identityAccountUsername: 'someone_else' }, {
+      expectedRendererUrl: valid.url
+    }),
+    /Identity account/u
+  )
+  assert.throws(
+    () => validateSmokeResult({ ...valid, contentSpaceProviderInstanceCount: 0 }, {
+      expectedRendererUrl: valid.url
+    }),
+    /Content Space Provider Instance/u
+  )
+})
+
+function validSmokeResult() {
+  return {
+    url: 'file:///electron-domain-smoke/index.html',
+    platform: 'darwin',
+    readiness: 'ready',
+    datasetLoopCreated: true,
+    datasetLoopWorkflowCount: 2,
+    paperRadarActionId: 'paper-radar.status',
+    workspacePreviewActionId: 'workspace-preview.list',
+    previewPluginCount: 1,
+    workspacePreviewPluginId: 'markdown',
+    workspacePreviewReleased: true,
+    artifactVersionsActionId: 'artifact-versions.list',
+    evidenceDagActionId: 'evidence-dag.view',
+    scientificPlottingActionId: 'scientific-plotting.status',
+    visualReviewActionId: 'visual-review.open',
+    identityActionId: 'identity.local.create-account',
+    identityAccountUsername: 'electron_smoke',
+    contentSpaceProviderActionId: 'content-space.list-provider-instances',
+    contentSpaceProviderInstanceRef: 'installed-provider',
+    contentSpaceProviderInstanceCount: 1,
+    nativeVisual: {
+      toolNames: ['sciforge_look', 'sciforge_capture'],
+      cropped: true,
+      nativeImageBindingValidated: true,
+      proofChainValidated: true,
+      datasetLoopCapabilitiesDiscoverable: true,
+      unavailableRouteFailedVisibly: true
+    },
+    codexPreToolUseHook: {
+      denied: true,
+      reason: 'sciforge_hook_deny_challenge:validated'
+    }
+  }
+}
 
 test('source smoke requires the app, hook, preload, and renderer outputs', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sciforge-smoke-source-test-'))

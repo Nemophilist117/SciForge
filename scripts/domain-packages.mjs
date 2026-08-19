@@ -11,6 +11,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const GENERATED_PATHS = Object.freeze({
   definitions: 'src/shared/installed-domain-packages.ts',
   main: 'src/main/modules/installed-domain-main.ts',
+  runtimeMcp: 'src/main/modules/installed-domain-runtime-mcp.ts',
   renderer: 'src/renderer/src/domain-modules/installed-domain-renderer.ts',
   workspaceServer:
     'packages/workers/workspace-host/src/generated/installed-domain-workspace-server.ts'
@@ -20,6 +21,9 @@ const IMPLICIT_BUNDLED_RUNTIME_PATHS = new Set([
   'package.json',
   'sciforge.domain.json'
 ])
+const MAIN_RUNTIME_MCP_SERVER_CONTRIBUTION_KIND = 'main.runtime-mcp-server'
+const DOMAIN_RUNTIME_MCP_EXPORT = './runtime-mcp'
+const DOMAIN_RUNTIME_MCP_RUNNER_EXPORT = 'runDomainRuntimeMcpServerFromArgv'
 
 export async function discoverDomainPackages(
   root,
@@ -64,6 +68,15 @@ export async function discoverDomainPackages(
       throw new Error(`Duplicate trusted domain package name: ${candidate.packageName}`)
     }
     names.add(candidate.packageName)
+  }
+  const runtimeMcpContributionIds = new Set()
+  for (const candidate of discovered) {
+    for (const contribution of runtimeMcpServerContributions(candidate.definition)) {
+      if (runtimeMcpContributionIds.has(contribution.id)) {
+        throw new Error(`Duplicate domain runtime MCP contribution ID: ${contribution.id}`)
+      }
+      runtimeMcpContributionIds.add(contribution.id)
+    }
   }
   validateRuntimeDependencyGraph(discovered)
   return Object.freeze(discovered)
@@ -113,14 +126,34 @@ function validatePreviewContributionContracts(definition) {
 }
 
 export function renderGeneratedDomainPackageFiles(packages) {
+  const installedPackages = packages.filter((candidate) =>
+    candidate.definition.composition !== 'development-only'
+  )
   return Object.freeze({
-    [GENERATED_PATHS.definitions]: renderDefinitions(packages),
-    [GENERATED_PATHS.main]: renderMain(packages.filter(hasEntrypoint('main'))),
-    [GENERATED_PATHS.renderer]: renderRenderer(packages.filter(hasEntrypoint('renderer'))),
+    [GENERATED_PATHS.definitions]: renderDefinitions(installedPackages),
+    [GENERATED_PATHS.main]: renderMain(installedPackages.filter(hasEntrypoint('main'))),
+    [GENERATED_PATHS.runtimeMcp]: renderRuntimeMcp(
+      installedPackages.filter(hasRuntimeMcpServer)
+    ),
+    [GENERATED_PATHS.renderer]: renderRenderer(
+      installedPackages.filter(hasEntrypoint('renderer'))
+    ),
     [GENERATED_PATHS.workspaceServer]: renderWorkspaceServer(
-      packages.filter(hasEntrypoint('workspace-server'))
+      installedPackages.filter(hasEntrypoint('workspace-server'))
     )
   })
+}
+
+function renderRuntimeMcp(packages) {
+  const imports = packages.map((candidate, index) =>
+    `import { ${DOMAIN_RUNTIME_MCP_RUNNER_EXPORT} as runDomainRuntimeMcpServer${index} } from '${candidate.packageName}/runtime-mcp'`
+  )
+  const launchers = packages.flatMap((candidate, packageIndex) =>
+    runtimeMcpServerContributions(candidate.definition).map((contribution) =>
+      `  ${JSON.stringify(contribution.id)}: runDomainRuntimeMcpServer${packageIndex}`
+    )
+  )
+  return `${GENERATED_HEADER}import type { DomainRuntimeMcpServerLauncher } from '@sciforge/domain-sdk/node/runtime-mcp-launcher'\nimport { selectedDomainRuntimeMcpContributionId } from '@sciforge/domain-sdk/node/runtime-mcp-launcher'\n${imports.join('\n')}${imports.length > 0 ? '\n' : ''}\nconst installedDomainRuntimeMcpServerLaunchers: Readonly<Record<string, DomainRuntimeMcpServerLauncher>> = Object.freeze({\n${launchers.join(',\n')}\n})\n\nexport async function runInstalledDomainRuntimeMcpServerFromArgv(\n  argv: string[]\n): Promise<boolean> {\n  const contributionId = selectedDomainRuntimeMcpContributionId(argv)\n  if (contributionId === null) return false\n  const launcher = installedDomainRuntimeMcpServerLaunchers[contributionId]\n  if (!launcher) {\n    throw new Error(\`Installed domain runtime MCP contribution is unavailable: \${contributionId}\`)\n  }\n  await launcher(argv)\n  return true\n}\n`
 }
 
 export async function generateDomainPackageFiles(root, { check = false } = {}) {
@@ -161,15 +194,17 @@ function renderMain(packages) {
   const values = packages.map((candidate, index) =>
     `      createDomainMainEntry${index}(domainHostFor(${JSON.stringify(candidate.packageName)}))`
   )
-  return `${GENERATED_HEADER}import type {\n  DomainMainHost,\n  DomainMainPackageStorageHost,\n  DomainMainSystemCapabilityInvoker,\n  DomainRuntimeContributionOwner\n} from '@sciforge/domain-sdk/host'\nimport { defineInstalledMainDomainEntrySet } from '@sciforge/domain-sdk/main'\n${imports.join('\n')}${imports.length > 0 ? '\n' : ''}import type { z } from 'zod'\nimport { installedDomainPackages } from '../../shared/installed-domain-packages'\nimport { defineCapability, type DefineCapabilityOptions } from '../capabilities/registry'\n\nexport type InstalledMainDomainHost = Omit<\n  DomainMainHost,\n  'defineCapability' | 'capabilities' | 'packageSettings' | 'packageSecrets'\n> & Readonly<{\n  capabilityInvokerFor: (owner: DomainRuntimeContributionOwner) => DomainMainSystemCapabilityInvoker\n  packageStorageFor: (owner: DomainRuntimeContributionOwner) => DomainMainPackageStorageHost\n}>\n\nexport function createInstalledMainDomainEntries(host: InstalledMainDomainHost) {\n  const { capabilityInvokerFor, packageStorageFor, ...sharedHost } = host\n  const domainHostFor = (packageName: string): DomainMainHost => {\n    const definition = installedDomainPackages.definitions.find(\n      (candidate) => candidate.packageName === packageName\n    )\n    if (!definition) throw new Error(\`Installed main domain package \${packageName} is unavailable.\`)\n    const owner = Object.freeze({\n      moduleId: definition.module.id,\n      moduleVersion: definition.module.version\n    })\n    const packageStorage = packageStorageFor(owner)\n    return {\n      ...sharedHost,\n      capabilities: capabilityInvokerFor(owner),\n      packageSettings: packageStorage.settings,\n      packageSecrets: packageStorage.secrets,\n      defineCapability: (options) => defineCapability(\n        options as DefineCapabilityOptions<z.ZodType, z.ZodType>\n      )\n    }\n  }\n  return defineInstalledMainDomainEntrySet<unknown>(\n    installedDomainPackages,\n    [\n${values.join(',\n')}\n    ]\n  ).entries\n}\n`
+  return `${GENERATED_HEADER}import type {\n  DomainMainHost,\n  DomainMainPackageStorageHost,\n  DomainMainSystemCapabilityInvoker,\n  DomainRuntimeContributionOwner\n} from '@sciforge/domain-sdk/host'\nimport { defineInstalledMainDomainEntrySet } from '@sciforge/domain-sdk/main'\n${imports.join('\n')}${imports.length > 0 ? '\n' : ''}import type { z } from 'zod'\nimport { installedDomainPackages } from '../../shared/installed-domain-packages'\nimport { defineCapability, type DefineCapabilityOptions } from '../capabilities/registry'\n\nexport type InstalledMainDomainHost = Omit<\n  DomainMainHost,\n  | 'defineCapability'\n  | 'capabilities'\n  | 'packageSettings'\n  | 'packageSecrets'\n  | 'fileTransfers'\n  | 'externalNavigation'\n  | 'portableResources'\n  | 'internalServices'\n> & Readonly<{\n  capabilityInvokerFor: (owner: DomainRuntimeContributionOwner) => DomainMainSystemCapabilityInvoker\n  packageStorageFor: (owner: DomainRuntimeContributionOwner) => DomainMainPackageStorageHost\n  fileTransfersFor?: (owner: DomainRuntimeContributionOwner) => NonNullable<DomainMainHost['fileTransfers']>\n  externalNavigationFor?: (owner: DomainRuntimeContributionOwner) => NonNullable<DomainMainHost['externalNavigation']>\n  portableResourcesFor?: (owner: DomainRuntimeContributionOwner) => NonNullable<DomainMainHost['portableResources']>\n  internalServicesFor?: (owner: DomainRuntimeContributionOwner) => NonNullable<DomainMainHost['internalServices']>\n}>\n\nexport function createInstalledMainDomainEntries(host: InstalledMainDomainHost) {\n  const {\n    capabilityInvokerFor,\n    packageStorageFor,\n    fileTransfersFor,\n    externalNavigationFor,\n    portableResourcesFor,\n    internalServicesFor,\n    ...sharedHost\n  } = host\n  const domainHostFor = (packageName: string): DomainMainHost => {\n    const definition = installedDomainPackages.definitions.find(\n      (candidate) => candidate.packageName === packageName\n    )\n    if (!definition) throw new Error(\`Installed main domain package \${packageName} is unavailable.\`)\n    const owner = Object.freeze({\n      moduleId: definition.module.id,\n      moduleVersion: definition.module.version\n    })\n    const packageStorage = packageStorageFor(owner)\n    return {\n      ...sharedHost,\n      capabilities: capabilityInvokerFor(owner),\n      packageSettings: packageStorage.settings,\n      packageSecrets: packageStorage.secrets,\n      ...(fileTransfersFor ? { fileTransfers: fileTransfersFor(owner) } : {}),\n      ...(externalNavigationFor ? { externalNavigation: externalNavigationFor(owner) } : {}),\n      ...(portableResourcesFor ? { portableResources: portableResourcesFor(owner) } : {}),\n      ...(internalServicesFor ? { internalServices: internalServicesFor(owner) } : {}),\n      defineCapability: (options) => defineCapability(\n        options as DefineCapabilityOptions<z.ZodType, z.ZodType>\n      )\n    }\n  }\n  return defineInstalledMainDomainEntrySet<unknown>(\n    installedDomainPackages,\n    [\n${values.join(',\n')}\n    ]\n  ).entries\n}\n`
 }
 
 function renderRenderer(packages) {
   const imports = packages.map((candidate, index) =>
     `import { createDomainRendererEntry as createDomainRendererEntry${index} } from '${candidate.packageName}/renderer'`
   )
-  const values = packages.map((_candidate, index) => `    createDomainRendererEntry${index}(domainHost)`)
-  return `${GENERATED_HEADER}import type { DomainRendererContribution, DomainRendererHost } from '@sciforge/domain-sdk/host'\nimport { defineInstalledRendererDomainEntrySet } from '@sciforge/domain-sdk/renderer'\n${imports.join('\n')}${imports.length > 0 ? '\n' : ''}import { installedDomainPackages } from '@shared/installed-domain-packages'\nimport type { VisibleContextComponentSnapshot } from '@shared/visible-context'\nimport { rendererCapabilityClient } from '../lib/capability-client'\nimport { openSafeExternalUrl } from '../lib/open-external'\nimport {\n  inspectRegisteredVisibleContextTargetAt,\n  inspectRegisteredVisibleContextTextSelection,\n  registerVisibleContextComponent,\n  registerVisibleContextVisualTarget\n} from '../lib/visible-context'\nimport { domainRendererNavigationHost } from './domain-renderer-navigation'\n\nlet rendererContributions: readonly DomainRendererContribution[] = []\nconst domainHost: DomainRendererHost = {\n  capabilityInvoker: rendererCapabilityClient,\n  contributions: {\n    list: (kind) => rendererContributions.filter((contribution) => contribution.kind === kind)\n  },\n  openExternal: async (url) => {\n    await openSafeExternalUrl(url)\n  },\n  workspace: {\n    pickFile: (request) => window.sciforge.pickFile(request),\n    openRemoteSession: async (input) => {\n      await window.sciforge.remoteWorkspace.attach(input)\n    }\n  },\n  ...domainRendererNavigationHost,\n  visibleContext: {\n    registerComponent: (component) => registerVisibleContextComponent(\n      component as VisibleContextComponentSnapshot\n    ),\n    registerVisualTarget: ({ element, ...input }) => registerVisibleContextVisualTarget({\n      ...input,\n      ...(element ? { element: element as () => Element | null } : {})\n    }),\n    inspectRegisteredTargetAt: inspectRegisteredVisibleContextTargetAt,\n    inspectRegisteredTextSelection: inspectRegisteredVisibleContextTextSelection\n  }\n}\n\nexport const installedRendererDomainEntrySet = defineInstalledRendererDomainEntrySet<unknown>(\n  installedDomainPackages,\n  [\n${values.join(',\n')}\n  ]\n)\nrendererContributions = Object.freeze(installedRendererDomainEntrySet.contributions.map((contribution) => Object.freeze({\n  id: contribution.declaration.id,\n  kind: contribution.declaration.kind,\n  packageName: contribution.packageName,\n  owner: contribution.owner,\n  ...(contribution.contract === undefined ? {} : { contract: contribution.contract }),\n  value: contribution.value\n})))\n`
+  const values = packages.map((candidate, index) =>
+    `    createDomainRendererEntry${index}(domainHostFor(${JSON.stringify(candidate.packageName)}))`
+  )
+  return `${GENERATED_HEADER}import type { DomainRendererContribution, DomainRendererHost } from '@sciforge/domain-sdk/host'\nimport { defineInstalledRendererDomainEntrySet } from '@sciforge/domain-sdk/renderer'\n${imports.join('\n')}${imports.length > 0 ? '\n' : ''}import { installedDomainPackages } from '@shared/installed-domain-packages'\nimport type { VisibleContextComponentSnapshot } from '@shared/visible-context'\nimport { rendererCapabilityClient } from '../lib/capability-client'\nimport { rendererFileTransferHostFor } from '../lib/file-transfer-client'\nimport { openSafeExternalUrl } from '../lib/open-external'\nimport {\n  inspectRegisteredVisibleContextTargetAt,\n  inspectRegisteredVisibleContextTextSelection,\n  registerVisibleContextComponent,\n  registerVisibleContextVisualTarget\n} from '../lib/visible-context'\nimport { domainRendererNavigationHost } from './domain-renderer-navigation'\n\nlet rendererContributions: readonly DomainRendererContribution[] = []\nconst domainHostFor = (packageName: string): DomainRendererHost => {\n  const definition = installedDomainPackages.definitions.find(\n    (candidate) => candidate.packageName === packageName\n  )\n  if (!definition) {\n    throw new Error(\`Installed renderer domain package \${packageName} is unavailable.\`)\n  }\n  const ownerId = definition.module.id\n  return {\n    capabilityInvoker: rendererCapabilityClient,\n    contributions: {\n      list: (kind) => rendererContributions.filter((contribution) => contribution.kind === kind)\n    },\n    openExternal: async (url) => {\n      await openSafeExternalUrl(url)\n    },\n    fileTransfers: rendererFileTransferHostFor(ownerId),\n    workspace: {\n      pickFile: (request) => window.sciforge.pickFile(request),\n      openRemoteSession: async (input) => {\n        await window.sciforge.remoteWorkspace.attach(input)\n      }\n    },\n    ...domainRendererNavigationHost,\n    visibleContext: {\n      registerComponent: (component) => registerVisibleContextComponent(\n        component as VisibleContextComponentSnapshot\n      ),\n      registerVisualTarget: ({ element, ...input }) => registerVisibleContextVisualTarget({\n        ...input,\n        ...(element ? { element: element as () => Element | null } : {})\n      }),\n      inspectRegisteredTargetAt: inspectRegisteredVisibleContextTargetAt,\n      inspectRegisteredTextSelection: inspectRegisteredVisibleContextTextSelection\n    }\n  }\n}\n\nexport const installedRendererDomainEntrySet = defineInstalledRendererDomainEntrySet<unknown>(\n  installedDomainPackages,\n  [\n${values.join(',\n')}\n  ]\n)\nrendererContributions = Object.freeze(installedRendererDomainEntrySet.contributions.map((contribution) => Object.freeze({\n  id: contribution.declaration.id,\n  kind: contribution.declaration.kind,\n  packageName: contribution.packageName,\n  owner: contribution.owner,\n  ...(contribution.contract === undefined ? {} : { contract: contribution.contract }),\n  value: contribution.value\n})))\n`
 }
 
 function renderWorkspaceServer(packages) {
@@ -189,6 +224,20 @@ function renderWorkspaceServer(packages) {
 function hasEntrypoint(processName) {
   return (candidate) => candidate.definition.entrypoints.some((entrypoint) =>
     entrypoint.process === processName
+  )
+}
+
+function hasRuntimeMcpServer(candidate) {
+  return runtimeMcpServerContributions(candidate.definition).length > 0
+}
+
+function runtimeMcpServerContributions(definition) {
+  return definition.entrypoints.flatMap((entrypoint) =>
+    entrypoint.process === 'main'
+      ? entrypoint.contributions.filter((contribution) =>
+          contribution.kind === MAIN_RUNTIME_MCP_SERVER_CONTRIBUTION_KIND
+        )
+      : []
   )
 }
 
@@ -240,6 +289,22 @@ async function validatePackageLayout({ packageRoot, definition, packageJson }) {
             : 'createDomainWorkspaceServerEntry'
       )
     }
+  }
+  const runtimeMcpContributions = runtimeMcpServerContributions(definition)
+  const exportsRuntimeMcp = Object.hasOwn(packageJson.exports, DOMAIN_RUNTIME_MCP_EXPORT)
+  if ((runtimeMcpContributions.length > 0) !== exportsRuntimeMcp) {
+    throw new Error(
+      `Domain package ${definition.packageName} must expose ${DOMAIN_RUNTIME_MCP_EXPORT} exactly when it declares ${MAIN_RUNTIME_MCP_SERVER_CONTRIBUTION_KIND}.`
+    )
+  }
+  if (runtimeMcpContributions.length > 0) {
+    await validateNamedExport(
+      packageRoot,
+      definition.packageName,
+      packageJson.exports,
+      DOMAIN_RUNTIME_MCP_EXPORT,
+      DOMAIN_RUNTIME_MCP_RUNNER_EXPORT
+    )
   }
   if (!isRecord(packageJson.scripts) || typeof packageJson.scripts.test !== 'string' ||
     typeof packageJson.scripts.typecheck !== 'string') {

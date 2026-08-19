@@ -46,6 +46,10 @@ describe('RuntimeCapabilityBroker', () => {
         command: '/bin/image-generation',
         enabledTools: ['visual.render']
       }],
+      trustedInvocationMetadata: [{
+        serverId: 'image-generation', tools: ['visual.render'],
+        metadataKey: 'fixture/trusted-invocation', source: 'trusted-invocation'
+      }],
       clientFactory: async () => client
     })
     const broker = createRuntimeCapabilityBroker({
@@ -127,6 +131,13 @@ describe('RuntimeCapabilityBroker', () => {
       arguments: {
         workspaceRoot: '/tmp/workspace',
         recipe: { scene: 'cells' }
+      },
+      _meta: {
+        'fixture/trusted-invocation': expect.objectContaining({
+          requestId: 'request-1', runtimeId: 'future-runtime',
+          threadId: 'thread-1', turnId: 'turn-1', callId: 'call-1',
+          actionId: expect.any(String)
+        })
       }
     }, expect.objectContaining({ signal: expect.any(AbortSignal), timeout: 30_000 }))
   })
@@ -185,6 +196,44 @@ describe('RuntimeCapabilityBroker', () => {
     })
     expect(alphaCall).toHaveBeenCalledTimes(1)
     expect(betaCall).not.toHaveBeenCalled()
+  })
+
+  it('filters managed discovery by generic package scope', async () => {
+    const gateway = createRuntimeMcpToolGateway({
+      servers: [
+        { id: 'computer-server', packageName: '@sciforge/domain-computer-use', command: '/bin/computer' },
+        { id: 'other-server', packageName: '@sciforge/domain-other', command: '/bin/other' }
+      ],
+      clientFactory: async (server) => ({
+        listTools: vi.fn(async () => ({ tools: [{
+          name: 'operate',
+          description: `${server.packageName} operation`,
+          annotations: { readOnlyHint: true }
+        }] })),
+        callTool: vi.fn(async () => ({ content: [] })),
+        close: vi.fn(async () => undefined)
+      })
+    })
+    const surface = createCapabilityAgentToolSurface({
+      broker: createRuntimeCapabilityBroker({ broker: emptyBroker(), managedTools: gateway }),
+      resolveCaller: (context) => ({
+        audience: 'agent', callerId: `${context.runtimeId}:${context.threadId}`,
+        workspaceId: context.workspaceId
+      })
+    })
+    const result = await surface.call({
+      name: CAPABILITY_AGENT_TOOL_NAMES.discover,
+      arguments: { providerFamily: 'managed-mcp' },
+      context: {
+        requestId: 'scoped', runtimeId: 'codex', threadId: 'child',
+        workspaceId: '/tmp/workspace',
+        brokerScope: { providerFamily: 'managed-mcp', packageName: '@sciforge/domain-computer-use' }
+      }
+    })
+    expect(result.value).toEqual([expect.objectContaining({
+      description: '@sciforge/domain-computer-use operation',
+      tags: expect.arrayContaining(['package-sciforge-domain-computer-use'])
+    })])
   })
 
   it('enforces runtime availability and preserves structured failures', async () => {
@@ -248,6 +297,145 @@ describe('RuntimeCapabilityBroker', () => {
       retryable: true,
       resourceIdentity: 'res_test_12345678901234567890'
     })
+  })
+
+  it('joins a pending managed write and fails admission instead of evicting it', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const callTool = vi.fn(async () => {
+      await gate
+      return { content: [{ type: 'text' as const, text: 'completed' }] }
+    })
+    const gateway = createRuntimeMcpToolGateway({
+      servers: [{ id: 'pending-writes', command: '/bin/pending-writes' }],
+      clientFactory: async () => ({
+        listTools: vi.fn(async () => ({ tools: [{
+          name: 'publish',
+          description: 'Publish one external mutation.',
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: false,
+            openWorldHint: true
+          }
+        }] })),
+        callTool,
+        close: vi.fn(async () => undefined)
+      })
+    })
+    const surface = createCapabilityAgentToolSurface({
+      broker: createRuntimeCapabilityBroker({
+        broker: emptyBroker(),
+        managedTools: gateway,
+        maxManagedInvocations: 1
+      }),
+      resolveCaller: (request) => ({
+        audience: 'agent',
+        callerId: `${request.runtimeId}:${request.threadId}`,
+        workspaceId: request.workspaceId
+      }),
+      requestApproval: async () => 'allowed' as const
+    })
+    const baseContext = {
+      requestId: 'pending-write',
+      runtimeId: 'future-runtime',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      workspaceId: '/tmp/workspace'
+    }
+    const discovered = await surface.call({
+      name: CAPABILITY_AGENT_TOOL_NAMES.discover,
+      arguments: { text: 'publish', providerFamily: 'managed-mcp' },
+      context: baseContext
+    })
+    const operationRef = (discovered.value as Array<{ operationRef: string }>)[0]!.operationRef
+    const invoke = (callId: string) => surface.call({
+      name: CAPABILITY_AGENT_TOOL_NAMES.invoke,
+      arguments: { operationRef, input: {} },
+      context: { ...baseContext, callId }
+    })
+
+    const first = invoke('call-1')
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce())
+    const joined = invoke('call-1')
+    await expect(invoke('call-2')).rejects.toMatchObject({
+      code: 'idempotency_capacity_exceeded'
+    })
+    expect(callTool).toHaveBeenCalledOnce()
+    release?.()
+    await expect(Promise.all([first, joined])).resolves.toHaveLength(2)
+    expect(callTool).toHaveBeenCalledOnce()
+  })
+
+  it('retains rejected managed invocations so terminal failures cannot execute again', async () => {
+    const callTool = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'action outcome is unknown' }],
+      isError: true,
+      structuredContent: {
+        error: {
+          code: 'ACTION_OUTCOME_UNKNOWN',
+          failureClass: 'unknown_outcome',
+          retryable: false
+        }
+      }
+    }))
+    const gateway = createRuntimeMcpToolGateway({
+      servers: [{ id: 'computer-use', command: '/bin/computer-use' }],
+      clientFactory: async () => ({
+        listTools: vi.fn(async () => ({ tools: [{
+          name: 'computer_use',
+          description: 'Mutate one bound CDP target.',
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: false,
+            openWorldHint: false
+          }
+        }] })),
+        callTool,
+        close: vi.fn(async () => undefined)
+      })
+    })
+    const broker = createRuntimeCapabilityBroker({ broker: emptyBroker(), managedTools: gateway })
+    const caller = {
+      audience: 'agent' as const,
+      callerId: 'codex:thread-1',
+      workspaceId: '/tmp/workspace',
+      approvals: []
+    }
+    const context = {
+      requestId: 'transport-1',
+      runtimeId: 'codex',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      workspaceId: '/tmp/workspace'
+    }
+    const [operation] = await broker.discover(
+      caller, { providerFamily: 'managed-mcp' }, { context }
+    )
+    expect(operation).toBeDefined()
+    const request = {
+      actionId: operation!.id,
+      invocationId: 'invocation-1',
+      input: { sessionId: 'session-1' }
+    }
+
+    await expect(broker.invoke(caller, request, { context })).rejects.toMatchObject({
+      code: 'ACTION_OUTCOME_UNKNOWN',
+      retryable: false
+    })
+    await expect(broker.invoke(caller, request, {
+      context: { ...context, requestId: 'transport-2' }
+    })).rejects.toMatchObject({
+      code: 'ACTION_OUTCOME_UNKNOWN',
+      retryable: false
+    })
+    await expect(broker.invoke(caller, {
+      ...request,
+      input: { sessionId: 'different-session' }
+    }, { context })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+    expect(callTool).toHaveBeenCalledTimes(1)
   })
 })
 
