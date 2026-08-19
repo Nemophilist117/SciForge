@@ -55,6 +55,15 @@ test('restart reconciliation resumes an already-running cloud Task without repla
         status: request.status,
         revision: cloudTask.revision + 1,
         updatedAt: TEST_LATER_TIMESTAMP,
+        ...(request.status === 'succeeded'
+          ? {
+              resultSummary: request.result?.summary ?? request.resultSummary,
+              resultProjectRecordId: TEST_IDS.projectRecordId,
+              safeFailureCode: undefined
+            }
+          : request.status === 'failed'
+            ? { resultSummary: undefined, resultProjectRecordId: undefined, safeFailureCode: request.safeFailureCode }
+            : { resultSummary: undefined, resultProjectRecordId: undefined, safeFailureCode: undefined }),
         ...(['succeeded', 'failed'].includes(request.status)
           ? { completedAt: TEST_LATER_TIMESTAMP }
           : { completedAt: undefined })

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
-const SENSITIVE_KEY = /(?:authorization|credential|secret|token|password|private.?key|challenge)/i
+const SENSITIVE_KEY = /(?:authorization|credential|secret|token|password|private.?key|private.?jwk|challenge|nonce|signature|binding.?code|code.?digest|api.?key|bot.?key|jwt|id.?token|access.?token)/i
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`

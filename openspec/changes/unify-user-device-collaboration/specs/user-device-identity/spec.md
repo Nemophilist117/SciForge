@@ -1,5 +1,7 @@
 # 用户—设备统一身份需求
 
+> 边界说明：A 拥有云端 User、Human Endpoint binding、Agent ownership 与 Participant 权威事实。本地 secret store、安装实例、renderer 展示和设备 runtime 属于 `origin/gui`/C 客户端基线，不是 A 本轮发布门槛。
+
 ## ADDED Requirements
 
 ### Requirement: 用户是唯一的人类协作主体
@@ -8,14 +10,14 @@
 
 #### Scenario: 同一用户完成手机和机器绑定
 
-- **WHEN** 用户验证一个 Zulip 身份并注册一台 SciForge
+- **WHEN** 用户验证一个所选 Provider 身份并注册一台 SciForge
 - **THEN** 两个端点 SHALL 引用同一 `userId`
 - **AND** 手机端点 SHALL 拥有独立 `humanEndpointId`
 - **AND** SciForge SHALL 拥有独立 `agentId`。
 
 #### Scenario: 用户修改显示名
 
-- **WHEN** 用户修改云端或 Zulip 显示名
+- **WHEN** 用户修改云端或所选 Provider 显示名
 - **THEN** `userId`、端点绑定和 Agent 所有权 SHALL 保持不变
 - **AND** 系统 SHALL NOT 创建第二个用户。
 
@@ -23,12 +25,16 @@
 
 `HumanEndpointBinding` SHALL 使用 `(provider, realmId, providerUserId)` 标识远端身份，并在创建前通过短期 challenge 验证实际控制者。显示名、topic、stream 或未经验证的邮箱 SHALL NOT 作为身份凭据。
 
-#### Scenario: 用户完成 Zulip challenge
+公共实现 SHALL 通过 OIDC User 发起的 identity binding REST（及同状态机的 `pairing.begin/redeem` 兼容 command）和受信 service confirm 完成该验证。旧 `endpoint.challenge.create` command 只保留 strict schema，公共 HTTP 边界 SHALL 永久 fail closed，SHALL NOT 建立第二套 pairing 或 User bootstrap 路径。
 
-- **WHEN** Gateway 收到由目标 Zulip 用户发送的有效未过期 challenge
+#### Scenario: 用户完成所选 Provider challenge
+
+- **WHEN** Gateway 收到由目标 Provider 用户发送的有效未过期 challenge
 - **THEN** 系统 SHALL 创建或确认该用户的 endpoint binding
 - **AND** SHALL 记录验证时间和 assurance
 - **AND** SHALL 立即使 challenge 失效。
+
+> 具体正式 Provider、Zulip 拓扑和最新版 SciForge 接线仍待团队方案确认；本需求只冻结 provider-neutral 身份语义。
 
 #### Scenario: Provider 身份已绑定其他用户
 
@@ -38,7 +44,9 @@
 
 ### Requirement: 每个 Agent 有稳定身份和唯一所有者
 
-每台参与协作的 SciForge SHALL 使用稳定 `agentId` 和 `ownerUserId` 注册。重启 SHALL 恢复同一 Agent；所有权转移 SHALL 使用显式、可审计且会轮换凭据的流程。
+每台参与协作的 SciForge SHALL 使用稳定 `agentId` 和 `ownerUserId` 注册。重启 SHALL 恢复同一 Agent；所有权转移 SHALL 使用显式、可审计且会轮换凭据的流程。转移 SHALL 失效旧 owner 上报的 capability profile，并与 Task 创建、retry/reassign、Worker 写入、offline heartbeat 和 Agent revoke 共享 `Project → Agent` 串行化顺序；只有目标 owner 已是所有受影响 Project 的可执行成员时，active Task 才能随同一 `agentId` 保持有效。若事务锁定 Agent 后才发现尚未预锁的受影响 Project，SHALL 放弃本次写入并以可重试冲突重新按完整顺序执行，SHALL NOT 反转锁序或提交部分状态。
+
+Agent 注册、owner transfer 与 User lifecycle SHALL 在目标 User 行上串行化。owner transfer SHALL 按 `Project → target User → Agent` 锁序重新确认目标 User 仍为 active；User 转为 suspended/revoked SHALL 在 User 锁内拒绝仍拥有 active Agent 的状态，要求先显式 revoke 或 transfer 这些 Agent。这样无论注册/转移还是 User lifecycle 先提交，最终都不得出现 active Agent 归属于非 active User。
 
 #### Scenario: SciForge 重启并重连
 
@@ -51,6 +59,34 @@
 - **WHEN** 不同 `userId` 尝试注册相同 installation 或 agent identity
 - **THEN** 系统 SHALL 返回所有权冲突
 - **AND** 原 owner 和 Agent 状态 SHALL 保持不变。
+
+#### Scenario: 所有权转移与 Task 分派并发
+
+- **WHEN** Agent 所有权转移与针对该 Agent 的 Task 创建或 retry/reassign 并发发生
+- **THEN** 云端 SHALL 通过相同的 `Project → Agent` 锁序串行化两项操作
+- **AND** 最终不存在 `assigneeUserId` 不属于 Project 可执行成员的 active Task
+- **AND** 旧 owner 的 capability profile 和旧 Agent credential SHALL 不得继续授权执行。
+
+#### Scenario: 目标 User lifecycle 与注册或所有权转移并发
+
+- **WHEN** Agent 注册或 owner transfer 与目标 User suspend/revoke 并发发生
+- **THEN** 云端 SHALL 通过目标 User 行锁串行化这些写入
+- **AND** lifecycle 先提交时注册或转移 SHALL 因目标 User 非 active 而拒绝
+- **AND** 注册或转移先提交时 lifecycle SHALL 要求先 revoke 或 transfer 该 active Agent
+- **AND** 最终 SHALL NOT 存在 owner User 非 active 的 active Agent。
+
+#### Scenario: Agent 状态写入发现新的 Project 边界
+
+- **WHEN** owner transfer、offline heartbeat 或 Agent revoke 在锁定 Agent 后发现一个尚未预锁的受影响 Project
+- **THEN** 云端 SHALL 不反向取得 Project 锁，也 SHALL NOT 提交部分状态
+- **AND** SHALL 返回可重试冲突，并在预锁完整 Project 集后按 `Project → Agent` 顺序重新执行。
+
+#### Scenario: 所有权转移使已认证 Coordinator 上下文过期
+
+- **WHEN** 请求已按旧 owner 或旧 Coordinator 上下文完成认证，但 Agent owner transfer 在该请求提交前先完成
+- **THEN** Project transition、Task cancel、coordination round 和 ProjectRecord accept SHALL 在同一事务中重新校验当前 Agent owner、当前 Coordinator 身份与 Project membership
+- **AND** 过期上下文 SHALL 在消费 confirmation 或写入任何治理事实前被拒绝
+- **AND** 被拒绝请求 SHALL NOT 消费其引用的 confirmation。
 
 ### Requirement: Participant 明确组合手机与 primary Agent
 
@@ -88,3 +124,17 @@ Provider service credential、Agent device token、一次性 challenge 和本地
 - **WHEN** UI 请求用户、端点和 Agent 状态
 - **THEN** 返回值 SHALL 只包含非敏感 ID、显示信息、状态、assurance 和时间
 - **AND** SHALL NOT 包含 credential 或可逆凭据片段。
+
+### Requirement: 当前 Agent 应用凭据可以自撤销
+
+已认证 Agent SHALL 能通过 `credential.revoke_current` 只撤销本次请求所使用的 opaque Agent bearer credential。
+服务器 SHALL 从认证上下文取得 credential identity，SHALL NOT 接受请求体自报 credential ID，且成功响应
+SHALL NOT 回显 token。撤销 SHALL 与 receipt、审计原子提交。OIDC User Access Token 的登出、刷新与撤销
+SHALL 由 issuer 管理；A SHALL NOT 把外部 OIDC token 伪装成可由该 command 撤销的本地 credential。
+
+#### Scenario: Agent 撤销当前 Bearer
+
+- **WHEN** Agent 使用有效 opaque Bearer 调用 `credential.revoke_current`
+- **THEN** 当前请求 SHALL 返回一次不含凭据的成功 receipt
+- **AND** 同一 Bearer 的后续请求 SHALL 返回 `credential_revoked`
+- **AND** 该用户的 OIDC identity、其他 Device 与 Agent credential SHALL 保持不变。

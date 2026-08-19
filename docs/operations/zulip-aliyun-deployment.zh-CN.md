@@ -1,4 +1,9 @@
-# SciForge 协作服务开发启动、香港 ECS 部署与运维手册
+# SciForge 协作服务既有 47.243 ECS 运行记录与运维手册
+
+> [!WARNING]
+> 本文记录的是 `47.243.145.156` 上既有（legacy）Zulip 与旧协作服务的 2026-08-15 运行基线。它不能证明新 A ECS `47.76.230.118` 已接管协作服务，也不能证明新 A 的固定 commit、数据库或合同已经通过公网路径。迁移期间必须把两套部署、数据和凭据视为彼此独立。
+>
+> 新 A 的正式入口、Human Provider、Zulip 是否参与以及 A 与本地最新版 SciForge 之间的消息方向均尚未形成经团队确认的方案。`https://chat.sciforge.cn/collaboration/` 只表示本文记录的 legacy 服务地址，不是新 A 的 canonical 目标，也不能据此推导未来产品链路。
 
 > 状态基线：2026-08-15（Asia/Shanghai）
 >
@@ -6,15 +11,15 @@
 >
 > Zulip：`https://chat.sciforge.cn`
 >
-> 协作服务：`https://chat.sciforge.cn/collaboration/`
+> legacy 协作服务：`https://chat.sciforge.cn/collaboration/`（仅作历史运行记录）
 
-本文同时覆盖源码开发启动、生产部署、升级、恢复和端到端验收。用户配对、Session 投影和手机验收步骤见
+本文主要保留 legacy 环境的源码开发启动、生产部署、升级、恢复和历史端到端验收记录；其中“当前”“已通过”等表述均以 `47.243.145.156` 的上述日期基线为范围，不自动适用于新 A ECS。用户配对、Session 投影和手机验收步骤见
 [手机与多人协作使用手册](../collaboration-user-guide.zh-CN.md)。本文中的尖括号均为占位符；不得把密码、
 API key、私钥、长期 token、一次性配对码或数据库连接凭据复制到本文、Git、聊天或工单。
 
 ## 1. 当前基线与发布门槛
 
-2026-08-15 的只读部署审计确认：香港 ECS 正常运行，根分区使用约 27%，可用内存约 1.3 GiB、swap
+2026-08-15 对 legacy `47.243.145.156` 的只读部署审计确认：该香港 ECS 正常运行，根分区使用约 27%，可用内存约 1.3 GiB、swap
 4 GiB，Nginx 与 PostgreSQL active；现有 Zulip 12.2 和 `https://chat.sciforge.cn` 继续提供登录与消息
 服务。协作服务使用独立进程、数据库、权限和发布目录，不修改或读取 Zulip 内部数据库。
 

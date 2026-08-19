@@ -1,0 +1,10 @@
+{
+  "providers": {
+    "zulip": {
+      "realmUrl": "https://chat.example.invalid",
+      "botEmail": "sciforge-bot@example.invalid",
+      "credentialSecretReference": "zulip-api-key",
+      "pairingAssurance": "verified"
+    }
+  }
+}

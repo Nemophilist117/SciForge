@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  AuthenticationService,
   CollaborationService,
   toAgent,
   toInboxMessage,
@@ -23,6 +22,7 @@ import {
   FakeHumanProvider,
   FakeServiceProjectionOutbox
 } from '../test-fixtures/collaboration/fake-adapters.mjs'
+import { createUnifiedIdentityServerFixture } from '../test-fixtures/collaboration/unified-identity/server-fixture.mjs'
 
 async function waitUntil(predicate, label) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -32,52 +32,43 @@ async function waitUntil(predicate, label) {
   assert.fail(`timed out waiting for ${label}`)
 }
 
-async function bindParticipant(service, authentication) {
-  const begun = await service.beginPairing({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    requestedDisplayName: '全链路用户',
-    idempotencyKey: 'full-path-begin-pairing'
-  })
-  const verified = await service.verifyPairingFromProvider({
-    provider: 'fake-im',
-    realmId: 'fake-realm',
-    providerUserId: 'full-path-provider-user',
-    providerEventId: 'full-path-pairing-event',
-    challengeCode: begun.challengeCode,
-    assurance: 'strong'
-  })
-  const redeemed = await service.redeemPairing({
-    pollSecret: begun.pollSecret,
-    idempotencyKey: 'full-path-redeem-pairing'
+async function bindParticipant(identity) {
+  const user = await identity.createUser('全链路用户')
+  const binding = await identity.bindZulip(user, 'full-path', {
+    zulipUserId: 'full-path-provider-user'
   })
   return {
-    userId: verified.userId,
-    humanEndpointId: verified.humanEndpointId,
-    userActor: await authentication.resolveBearer(redeemed.userCredential),
-    endpointActor: await authentication.resolveProviderIdentity('fake-im', 'fake-realm', 'full-path-provider-user')
+    ...user,
+    ...binding,
+    userActor: user.actor,
+    humanEndpointId: binding.endpointId
   }
 }
 
-test('10.2 canonical Fake provider → server → fixed desktop Session → server → provider survives retry and offline delivery', async () => {
+test('10.2 canonical trusted Zulip binding → server → fixed desktop Session → server → provider survives retry and offline delivery', async (t) => {
   const clock = new FakeClock()
   const repository = new FakeCollaborationRepository()
-  const authentication = new AuthenticationService(repository, clock.now)
   const service = new CollaborationService({ repository, now: clock.now })
-  const provider = new FakeHumanProvider()
-  const participant = await bindParticipant(service, authentication)
+  const identity = await createUnifiedIdentityServerFixture({ repository, now: clock.now })
+  t.after(() => identity.close())
+  const participant = await bindParticipant(identity)
+  const device = await identity.createDevice(participant, 'full-path-agent', {
+    displayName: '全链路 Device',
+    capabilitySummary: ['agent-runtime']
+  })
+  const provider = new FakeHumanProvider({ provider: 'zulip', realmId: participant.realmId })
   const registered = await service.registerAgent(participant.userActor, {
-    installationId: 'ins_FullPath000001',
+    deviceId: device.device.deviceId,
     displayName: '全链路 Agent',
     nodeType: 'desktop',
     capabilities: ['agent-runtime'],
     idempotencyKey: 'full-path-register-agent'
   })
-  const agentActor = await authentication.resolveBearer(registered.deviceCredential)
+  const agentActor = await identity.authentication.resolveBearer(registered.deviceCredential)
   const locator = {
     type: 'provider_locator',
-    provider: 'fake-im',
-    realmId: 'fake-realm',
+    provider: 'zulip',
+    realmId: participant.realmId,
     containerId: 'full-path-container',
     topicId: 'full-path-stable-topic',
     topicDisplayName: '固定个人 Session'

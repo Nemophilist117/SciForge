@@ -1,5 +1,7 @@
 # 个人 Session 远端投影需求
 
+> 边界说明：这是 `origin/gui` 既有桌面/手机协作的跨团队基线，不是 A 本轮实现或发布门槛。A 只保存投影所需的最小云端身份、定位与路由事实，不拥有本地 runtime/thread/workspace 映射或桌面交互。
+
 ## ADDED Requirements
 
 ### Requirement: 一个个人 topic 固定投影一个本地 Session
@@ -94,6 +96,6 @@ Active projection SHALL 同步本地和远端 user message 及最终 assistant r
 
 #### Scenario: 远端消息被编辑
 
-- **WHEN** 已接受的消息在 Zulip 中被编辑
+- **WHEN** 已接受的消息在所选 Provider 中被编辑
 - **THEN** 原本地消息和 turn SHALL 保持不变
 - **AND** 用户 SHALL 通过新消息更正或由系统记录审计事件。

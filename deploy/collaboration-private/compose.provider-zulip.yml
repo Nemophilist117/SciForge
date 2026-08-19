@@ -1,0 +1,16 @@
+services:
+  app:
+    environment:
+      SCIFORGE_COLLABORATION_PROVIDER_CONFIG_FILE: /run/sciforge-provider/config/providers.json
+      SCIFORGE_COLLABORATION_SECRET_DIRECTORY: /run/sciforge-provider/secrets
+    volumes:
+      - type: bind
+        source: ${SCIFORGE_COLLAB_PROVIDER_CONFIG_FILE:?set SCIFORGE_COLLAB_PROVIDER_CONFIG_FILE}
+        target: /run/sciforge-provider/config/providers.json
+        read_only: true
+      - type: bind
+        source: ${SCIFORGE_COLLAB_PROVIDER_SECRET_DIR:?set SCIFORGE_COLLAB_PROVIDER_SECRET_DIR}
+        target: /run/sciforge-provider/secrets
+        read_only: true
+    labels:
+      cn.sciforge.deployment.mode: zulip-provider-private

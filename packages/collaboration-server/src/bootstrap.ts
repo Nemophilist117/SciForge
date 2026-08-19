@@ -1,9 +1,15 @@
 import { once } from 'node:events'
 import type { Server } from 'node:http'
 
-import { createCollaborationHttpServer, type ProviderDirectory } from './api.js'
-import { AuthenticationService } from './auth.js'
+import {
+  createCollaborationHttpServer,
+  type BindingConfirmAuthenticator,
+  type ProviderDirectory
+} from './api.js'
+import { AuthenticationService, StrictOidcUserResolver } from './auth.js'
+import { IdentityService } from './identity-service.js'
 import { isCollaborationDatabaseReady } from './migrations.js'
+import { createOidcAccessTokenVerifier, type OidcAccessTokenVerifierOptions } from './oidc.js'
 import { PostgresCollaborationRepository, type SqlPool } from './postgres.js'
 import type { CollaborationProviderRuntime } from './provider-runtime.js'
 import type { CollaborationRepository } from './repository.js'
@@ -17,6 +23,8 @@ export type CollaborationServerRuntimeOptions = {
   basePath?: string
   allowedOrigins?: readonly string[]
   providers?: ProviderDirectory
+  oidc?: OidcAccessTokenVerifierOptions
+  authenticateZulipBindingConfirm?: BindingConfirmAuthenticator
   providerRuntimeFactory?: (context: Readonly<{
     repository: CollaborationRepository
     service: CollaborationService
@@ -27,6 +35,7 @@ export type CollaborationServerRuntimeOptions = {
 
 export type CollaborationServerRuntime = {
   readonly service: CollaborationService
+  readonly identities: IdentityService
   readonly authentication: AuthenticationService
   readonly httpServer: Server
   start(): Promise<{ host: string; port: number }>
@@ -40,7 +49,10 @@ export function createCollaborationServerRuntime(options: CollaborationServerRun
   const repository = new PostgresCollaborationRepository(options.pool)
   const webSocketHub = new CollaborationWebSocketHub()
   const service = new CollaborationService({ repository, notifier: webSocketHub, now: options.now })
-  const authentication = new AuthenticationService(repository, options.now)
+  const identities = new IdentityService({ repository, now: options.now })
+  const oidcVerifier = options.oidc ? createOidcAccessTokenVerifier(options.oidc) : undefined
+  const authentication = new AuthenticationService(repository, options.now,
+    oidcVerifier ? new StrictOidcUserResolver(oidcVerifier, identities) : undefined)
   let providerRuntime: CollaborationProviderRuntime | undefined
   const providerDirectory: ProviderDirectory | undefined = options.providerRuntimeFactory
     ? {
@@ -51,8 +63,9 @@ export function createCollaborationServerRuntime(options: CollaborationServerRun
         }
       }
     : options.providers
-  const httpServer = createCollaborationHttpServer({ service, authentication,
+  const httpServer = createCollaborationHttpServer({ service, identities, authentication,
     readiness: () => isCollaborationDatabaseReady(options.pool), providers: providerDirectory,
+    authenticateZulipBindingConfirm: options.authenticateZulipBindingConfirm,
     basePath: options.basePath, now: options.now })
   webSocketHub.attach(httpServer, { authentication, basePath: options.basePath,
     allowedOrigins: options.allowedOrigins, now: options.now })
@@ -61,6 +74,7 @@ export function createCollaborationServerRuntime(options: CollaborationServerRun
   let starting: Promise<{ host: string; port: number }> | undefined
   return {
     service,
+    identities,
     authentication,
     httpServer,
     async start() {

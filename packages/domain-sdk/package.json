@@ -36,10 +36,13 @@
   },
   "files": [
     "src",
+    "dist",
+    "portable-resource-provenance.json",
     "package.json",
     "README.md"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },

@@ -1,10 +1,12 @@
 # SciForge Agent 节点需求
 
+> 边界说明：节点协议与 AgentRuntime 是 `origin/gui`/C 的客户端基线，不是 A 本轮重新实现的内容。A 只提供节点注册、凭据、能力目录、Inbox、心跳、任务状态和结果的公共云端边界。
+
 ## ADDED Requirements
 
 ### Requirement: 每台 SciForge 是所属用户的独立 Agent 节点
 
-每个参与协作的 SciForge SHALL 使用稳定 `agentId`、`ownerUserId`、节点名称、节点类型、能力和在线状态注册。PoC 用户 SHALL 明确选择 primary Agent；同一用户的其他节点 SHALL NOT 被自动选为替代执行者。
+每个参与协作的 SciForge SHALL 使用稳定 `agentId`、`ownerUserId`、节点名称和节点类型注册，并通过 `agent.capability_profile.report` 独立上报有期限的严格能力快照。heartbeat SHALL 只维护可达性；online/offline/busy/revoked SHALL 由 A 根据心跳、撤销和 active execution 派生。PoC 用户 SHALL 明确选择 primary Agent；同一用户的其他节点 SHALL NOT 被自动选为替代执行者。
 
 #### Scenario: 同一用户注册桌面和服务器节点
 
@@ -13,15 +15,31 @@
 - **AND** 每个节点 SHALL 分别报告能力、状态和心跳
 - **AND** 个人 Session SHALL 固定其中一个 agentId。
 
+#### Scenario: Agent 上报能力快照
+
+- **WHEN** C 上报 OS/架构、runtime IDs、capability evidence、GPU 摘要、VPN/Slurm/ResourceRef IDs 和结果回传策略
+- **THEN** A SHALL 只保存严格公共字段和 reported/expires 时间
+- **AND** credential、地址、队列私有结构、本地路径和完整日志 SHALL 被拒绝。
+
 ### Requirement: Agent 使用设备身份连接统一信箱
 
 Agent SHALL 使用仅属于本节点的可撤销 device credential 连接云端，通过统一版本化合同读取 Inbox、确认 sequence、接受或拒绝 Task、报告状态并提交结果。
 
 #### Scenario: Agent 接受 Task
 
-- **WHEN** Agent 收到分配给自己的当前 revision TaskOffer
+- **WHEN** Agent 收到分配给自己的当前 revision 与 executionId TaskOffer
 - **THEN** SHALL 发送 TaskAccepted receipt
-- **AND** 只有云端确认 assignee 后才开始正式执行。
+- **AND** 只有云端确认 assignee、execution 和 revision 后才开始正式执行。
+
+### Requirement: Agent Inbox 使用连续 ACK
+
+同一 Agent Inbox 的 Coordinator 与 Worker 消息 SHALL 共享单调 sequence。C MAY 并行分发到本地消费者，但 SHALL 只把连续完成的最高 sequence 提交给 A。A 明确 superseded 的消息 MAY 跨越；未完成 active message SHALL 形成 `inbox_ack_gap`。
+
+#### Scenario: Coordinator 与 Worker 消息交错完成
+
+- **WHEN** sequence 10 和 12 已完成但 sequence 11 仍 active
+- **THEN** C SHALL 最多 ACK 到 10
+- **AND** A SHALL 拒绝直接 ACK 12 并返回服务器已提交位置。
 
 #### Scenario: Agent 收到其他节点的消息
 
@@ -47,17 +65,17 @@ Agent SHALL 使用仅属于本节点的可撤销 device credential 连接云端�
 
 ### Requirement: Agent 断线重连不重复执行
 
-Agent SHALL 持久化或恢复正在处理的 projection/task identity、revision、local turn 和最后确认 sequence，并与云端 receipt 协调继续、刷新或终止。
+Agent SHALL 持久化或恢复正在处理的 projection/taskId/executionId、revision、local turn 和最后确认 sequence，并与云端 receipt 协调继续、刷新或终止。A 只提供协议事实，不实现 C 的本地 journal、Runtime 恢复或平台 adapter。
 
 #### Scenario: Task 执行中断线
 
 - **WHEN** Agent 与云端断开但本地 Task 仍在运行
 - **THEN** MAY 按本地策略继续
-- **AND** 重连后 SHALL 报告实际状态而不是重新接受同一 revision。
+- **AND** 重连后 SHALL 报告实际状态而不是重新接受同一 execution。
 
 #### Scenario: Task 已改派
 
-- **WHEN** Agent 重连发现旧 revision 已取消或改派
+- **WHEN** Agent 重连发现旧 execution 已取消、重试或改派
 - **THEN** SHALL 停止提交旧版本正式结果
 - **AND** MAY 保存本地输出作为未接受诊断，但 SHALL NOT 覆盖当前 Task。
 

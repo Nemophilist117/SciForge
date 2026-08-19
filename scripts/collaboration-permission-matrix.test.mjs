@@ -41,6 +41,10 @@ const worker = {
   credentialId: 'credential-worker',
   assurance: 'device'
 }
+const system = {
+  kind: 'system',
+  actorKey: 'actor-system'
+}
 
 function assertDenied(facts, expectedCode = 'permission_denied') {
   assert.throws(() => authorize(facts), (error) => {
@@ -54,7 +58,12 @@ test('8.1 canonical permission matrix permits only explicit actor, target, role 
   const allowed = [
     { actor: endpointA, operation: 'personal_message', resourceOwnerUserId: 'user-a' },
     { actor: endpointA, operation: 'project_input', projectMember: true },
-    { actor: coordinator, operation: 'task_create', coordinatorAgentId: 'agent-coordinator' },
+    { actor: userA, operation: 'task_create', projectRole: 'owner' },
+    { actor: coordinator, operation: 'task_retry', coordinatorAgentId: 'agent-coordinator' },
+    { actor: userA, operation: 'task_retry', projectRole: 'owner' },
+    { actor: userA, operation: 'task_reassign', projectRole: 'owner' },
+    { actor: userA, operation: 'task_cancel', projectRole: 'owner' },
+    { actor: coordinator, operation: 'coordination_write', coordinatorAgentId: 'agent-coordinator' },
     { actor: worker, operation: 'task_update', assigneeAgentId: 'agent-worker' },
     { actor: worker, operation: 'human_needed', assigneeAgentId: 'agent-worker', projectMember: true },
     { actor: endpointB, operation: 'human_answer', targetUserId: 'user-b', requiredAssurance: 'strong' },
@@ -66,14 +75,19 @@ test('8.1 canonical permission matrix permits only explicit actor, target, role 
       remoteApprovalAllowed: true
     },
     { actor: userA, operation: 'project_admin', projectRole: 'owner' },
-    { actor: coordinator, operation: 'record_accept', coordinatorAgentId: 'agent-coordinator' }
+    { actor: coordinator, operation: 'record_accept', coordinatorAgentId: 'agent-coordinator', recordKind: 'task_result' },
+    { actor: userA, operation: 'record_accept', projectRole: 'owner', recordKind: 'summary' }
   ]
   for (const facts of allowed) assert.doesNotThrow(() => authorize(facts))
 
   const denied = [
     { actor: endpointA, operation: 'personal_message', resourceOwnerUserId: 'user-b' },
     { actor: endpointA, operation: 'project_input', projectMember: false },
-    { actor: worker, operation: 'task_create', coordinatorAgentId: 'agent-coordinator' },
+    { actor: coordinator, operation: 'task_create', projectRole: 'owner' },
+    { actor: worker, operation: 'task_retry', coordinatorAgentId: 'agent-coordinator' },
+    { actor: coordinator, operation: 'task_reassign', projectRole: 'owner' },
+    { actor: coordinator, operation: 'task_cancel', projectRole: 'owner' },
+    { actor: worker, operation: 'coordination_write', coordinatorAgentId: 'agent-coordinator' },
     { actor: coordinator, operation: 'task_update', assigneeAgentId: 'agent-worker' },
     { actor: coordinator, operation: 'human_needed', assigneeAgentId: 'agent-worker', projectMember: true },
     { actor: endpointA, operation: 'human_answer', targetUserId: 'user-b' },
@@ -85,7 +99,11 @@ test('8.1 canonical permission matrix permits only explicit actor, target, role 
       remoteApprovalAllowed: false
     },
     { actor: endpointA, operation: 'project_admin', projectRole: 'owner' },
-    { actor: worker, operation: 'record_accept', coordinatorAgentId: 'agent-coordinator' }
+    { actor: worker, operation: 'record_accept', coordinatorAgentId: 'agent-coordinator', recordKind: 'task_result' },
+    { actor: coordinator, operation: 'record_accept', coordinatorAgentId: 'agent-coordinator', recordKind: 'summary' },
+    { actor: system, operation: 'task_create', projectRole: 'owner' },
+    { actor: system, operation: 'task_cancel', projectRole: 'owner' },
+    { actor: system, operation: 'record_accept', projectRole: 'owner', recordKind: 'summary' }
   ]
   for (const facts of denied) assertDenied(facts)
 

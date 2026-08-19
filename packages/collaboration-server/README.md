@@ -1,15 +1,15 @@
 # SciForge 云端协作服务
 
-`@sciforge/collaboration-server` 是 SciForge 用户、手机 Human Endpoint 与桌面 Agent 之间的云端协作内核。本说明以中文为主；命令、环境变量和公共入口保持英文，便于自动化部署和开源集成。
+`@sciforge/collaboration-server` 是 SciForge OIDC User、Device、Human Endpoint 与 Agent 之间的云端协作内核。本说明以中文为主；命令、环境变量和公共入口保持英文，便于自动化部署和开源集成。
 
 ## 定位与架构边界
 
-服务端负责身份与设备绑定、个人 Topic 与桌面 Session projection、Project/Task/Record、顺序 inbox/outbox、幂等回执、审计、provider 事件游标和连接通知。生产状态以单个 PostgreSQL schema 为唯一事实源；状态变更、审计、收件箱消息和幂等回执在同一事务内提交。
+服务端负责严格 OIDC User 映射、Device enrollment 与持钥证明、Agent→Device 关联、Zulip 外部身份绑定、个人 Topic 与桌面 Session projection、Project/Task/Record、顺序 inbox/outbox、幂等回执、审计、provider 事件游标和连接通知。生产状态以单个 PostgreSQL schema 为唯一事实源；状态变更、审计、收件箱消息和幂等回执在同一事务内提交。
 
 它刻意不负责以下能力：
 
 - 不运行模型、桌面 Session、本地工具或科研工作流；这些仍由本地 SciForge Agent runtime 管理。
-- 不在核心中识别 Zulip 或其他 provider ID。已安装 adapter 通过 manifest 与 generated composition 注入，核心只使用 `@sciforge/collaboration-contracts` 的 provider-neutral contract。
+- 除已冻结的 User↔Zulip external identity binding 外，Project/Task/Inbox 核心不解释 provider 私有 ID。已安装 adapter 通过 manifest 与 generated composition 注入，协作领域只使用 `@sciforge/collaboration-contracts` 的 provider-neutral contract。
 - 不把 WebSocket 当作消息事实源。WebSocket 只通知 `connection.ready` 和 `inbox.available`；客户端仍按 sequence 拉取并 ack，因此断线和重启不会跳过正文。
 - 不提供第二套内存或文件生产后端。测试可注入 fake repository，但生产只有 PostgreSQL 路径。
 
@@ -25,6 +25,10 @@
 | `@sciforge/collaboration-server/service` | canonical domain service |
 
 跨包协议、实体和 wire schema 必须从 `@sciforge/collaboration-contracts` 的公共入口导入；不要依赖本包 `src/` 私有路径。
+
+A 自身 MVP 的唯一命令入口、actor、幂等与 revision 规则，以及用户、设备、Project、Task、Inbox、
+Human confirmation、ResourceRef、能力目录、进度和结果回传的最小公共面，见
+[A 云端协作最小公共 API](../../docs/collaboration-public-api.zh-CN.md)。
 
 ## 前置条件
 
@@ -102,10 +106,16 @@ node packages/collaboration-server/dist/cli.js
 | `SCIFORGE_COLLABORATION_LISTEN_PORT` | 默认 `8787` | 本地监听端口 |
 | `SCIFORGE_COLLABORATION_BASE_PATH` | 默认空 | 服务自身处理的路径前缀；代理 strip-prefix 时保持空 |
 | `SCIFORGE_COLLABORATION_ALLOWED_ORIGINS` | 默认空 | WebSocket 允许的逗号分隔 Origin；浏览器接入时生产必须显式设置 |
+| `SCIFORGE_COLLABORATION_OIDC_ISSUER` | 可选；默认空 | 当前部署唯一允许的 OIDC issuer，逐字符匹配；生产必须为 HTTPS。空值不会阻止进程启动或数据库 readiness，但所有 User API fail closed |
+| `SCIFORGE_COLLABORATION_OIDC_AUDIENCE` | 固定 `sciforge-cloud-api` | User Access Token 的必需 audience；CLI 拒绝其他配置 |
+| `SCIFORGE_COLLABORATION_OIDC_AUTHORIZED_PARTIES` | 固定 `sciforge-desktop,sciforge-web-mobile` | 普通 User Token 的 `azp` allowlist；service client 不得加入 |
+| `SCIFORGE_COLLABORATION_OIDC_ALLOW_INSECURE_LOOPBACK` | 默认 `false` | 只为本地测试显式允许数字 loopback HTTP issuer；生产保持 `false` |
 | `SCIFORGE_COLLABORATION_PROVIDER_CONFIG_FILE` | 可选 | 非敏感 provider JSON 的绝对路径；未设置时 provider runtime 不启动 |
 | `SCIFORGE_COLLABORATION_SECRET_DIRECTORY` | 启用 provider 时必填 | provider secret 文件目录 |
 
 `BASE_PATH` 若设为 `/collaboration`，探针和 API 都位于该前缀下。仓库 Nginx 示例会移除外部 `/collaboration/` 后再反代，所以其对应服务配置应保持空。
+
+OIDC 配置为空是一种显式 core-only 模式，不是匿名 User 模式：`/healthz` 可用，数据库 schema 正常时 `/readyz` 仍可返回 200，但 `/v1/me`、Device、Zulip binding 和需要 User actor 的 command 全部拒绝。JWT 验证失败也不会回退到旧 opaque User bearer。`/v1/integrations/zulip/bindings/confirm` 使用独立的可注入 service-auth adapter；当前打包 CLI 没有该 adapter，因此 confirm 默认 fail closed，不能用环境变量或匿名调用绕过。
 
 ### Provider 配置与 secret-file 注入
 
@@ -126,14 +136,18 @@ Provider JSON 只能包含非敏感配置以及指向 secret 文件的 `...Secre
 
 Secret reference 必须是安全 basename，不能包含路径分隔符。运行时会通过 `realpath` 验证目标仍位于 `SCIFORGE_COLLABORATION_SECRET_DIRECTORY` 内，并拒绝不安全的文件权限。secret 文件应由服务账号拥有，使用 `0400`/`0600`，或在专用服务组场景使用 `0640`；不要给予 other-user 权限。
 
-`pairingAssurance` 默认为 `verified`。只有部署管理员确认 realm 的登录和账号保护符合强认证政策时才可设为 `strong`，因为它会影响配对后 user credential 的 assurance。
+`pairingAssurance` 默认为 `verified`，只描述 provider gateway 形成的 Human Endpoint assurance，不创建 User、不签发 User bearer，也不替代 OIDC 登录。只有部署管理员确认 realm 的登录和账号保护符合强认证政策时才可设为 `strong`。
 
 当前每个已安装 provider contribution 在一个服务实例内只管理一份配置和一个 realm，事件 cursor 也按 provider 持久化。同一 provider 需要多个 realm 时，应使用彼此隔离的服务实例与数据库；运行时检测到跨 realm cursor 会 fail closed。
 
 ## 探针、API 与停止
 
 - `GET /healthz`：纯 liveness，只表示进程可响应，不披露环境、数据库或 provider 信息。
-- `GET /readyz`：检查 PostgreSQL 可访问且 schema version 已到当前版本；迁移前或数据库故障时不应接流量。
+- `GET /readyz`：检查 PostgreSQL 可访问且 schema version 已到当前版本；它不表示 OIDC/JWKS 或 Zulip confirm adapter 已配置。
+- `GET /console/`：A-only 同源网页控制台；Bearer 仅保存在页面内存中，用于 Owner 确认、状态查询和 Inbox 操作。
+- `GET /v1/me` 与 `/v1/me/*`：严格 OIDC User 的本人身份、Device 与外部身份查询/撤销。
+- `POST /v1/device-enrollments`、`POST /v1/devices`：OIDC User 发起 enrollment，并以 Ed25519 持钥证明创建 Device。
+- `POST /v1/integrations/zulip/bindings`：OIDC User 发起绑定；`.../confirm` 只接受注入 adapter 验证后的 service actor。
 - `POST /v1/commands`：严格 REST command envelope。
 - `GET /v1/events`：WebSocket Upgrade，仅发送连接和 inbox 可用性通知。
 
@@ -142,19 +156,18 @@ Loopback 核验示例：
 ```sh
 curl --fail http://127.0.0.1:8787/healthz
 curl --fail http://127.0.0.1:8787/readyz
+curl --fail http://127.0.0.1:8787/console/
 ```
 
 收到 `SIGTERM` 或 `SIGINT` 后，进程会停止接受新连接，并依次关闭 provider pump、WebSocket、HTTP 与 PostgreSQL pool。外部服务管理器仍应配置有界停止超时。
 
-## 配对与消息同步摘要
+## OIDC、Device、Agent 与 Zulip binding 摘要
 
-桌面端调用匿名且限流的 provider catalog、`pairing.begin` 和 `pairing.redeem` 完成首次绑定。`pairing.begin` 返回一次性的 challenge 与 poll secret；界面只把 poll secret 写入本地 secret store，并提示用户在已登录的手机 provider 中发送完整配对命令：
+User 只由配置 issuer 的 RS256 OIDC Access Token 建立。A 严格验证 Discovery/JWKS、`iss/aud/azp/sub/exp/nbf/iat/auth_time`，再以 `(issuer, sub)` 并发安全地 JIT 映射为稳定 `userId`；`GET /v1/me` 与 User command 使用同一 resolver。A 不保存原始 Token 或完整 claims，也不签发或接受旧 opaque User bearer。
 
-```text
-sciforge-pair <challengeId> <challengeCode>
-```
+已登录 User 先调用 `POST /v1/device-enrollments` 取得一次性 nonce，再用 Device Ed25519 私钥签名规范 enrollment bytes，并向 `POST /v1/devices` 提交签名、公开 JWK、`platform` 和 `capabilitySummary`。这些字段属于 Device；私钥不上传。随后 `agent.register` 只引用该 User 自己的 ACTIVE `deviceId` 来创建或确认 Agent 关联，不创建 Device、不消费 enrollment；Agent 的节点 `capabilities` 仍保留在 Agent，不与 Device 摘要合并。Agent bearer 只在成功注册时返回一次，必须立即写入本地 secret store；撤销 Device 会使其下 Agent credential 失效。
 
-在 pending 期间，客户端应对同一次 redeem 轮询保持稳定的 idempotency key；非终态 pending 不缓存为最终 receipt。验证后首次成功 redeem 才返回一次性 user credential 并消费 challenge，同 key 重放只返回脱敏结果，不会再次下发 credential。Agent device credential 也只返回一次，必须立即写入本地 secret store。
+Zulip 绑定由已登录 OIDC User 调用 `POST /v1/integrations/zulip/bindings` 发起并取得五分钟、一次性的 `bindingCode`，D 负责解析 `/bind CODE` 和验证 Zulip 事件。D 只可通过受信 confirm adapter 把验证后的 Realm/User/event 上下文交给 A；A 从绑定请求取得目标 `userId`，confirm 不接受匿名调用、不创建 User。`pairing.begin/redeem` 仅作为同一状态机的已认证兼容 command，不再匿名 bootstrap，也不返回 User bearer。
 
 个人 Topic 绑定到固定 projection 与 Agent，顺序 inbox/outbox、receipt 和 provider cursor 都持久化在 PostgreSQL。Topic 整体重命名或移动时，provider adapter 保留稳定 topic identity，云端先排入 revision 更新通知，再继续同一个桌面 Session；歧义、部分移动、冲突或旧 revision 都会 fail closed。
 
@@ -165,6 +178,8 @@ sciforge-answer <humanRequestId> <requestRevision> <answer>
 ```
 
 ## 测试、构建与打包
+
+仓库跟踪的 `test-fixtures/collaboration/unified-identity/` 提供动态本地 OIDC/JWKS、RS256 轮换、Ed25519 Device 与 Zulip binding fixtures。它们只证明离线合同和实现边界，不得描述为真实 Keycloak、Desktop 或 Zulip E2E；外部 issuer、测试账号、Mapper 与 D service-auth 未就绪时只能报告离线通过。
 
 常用发布门禁：
 
@@ -220,7 +235,7 @@ ci`、`npm ls`、CLI help、migration loader 和探针 smoke。`npm pack --dry-r
 
 ## 安全禁忌
 
-- 不得把数据库口令、API key、私钥、token、Authorization header、pairing code、poll secret 或 user/device credential 写入代码、JSON、日志、文档、Git、shell history、工单或截图。
+- 不得把数据库口令、API key、私钥、token、Authorization header、binding code、enrollment nonce、签名或 Agent credential 写入代码、JSON、日志、文档、Git、shell history、工单或截图。
 - 不得把 secret 内联到 provider 配置；只允许权限受限、越界检查后的 secret-file 注入。
 - 不得在公开示例中放真实域名、公网 IP、账号、主机路径或现场拓扑；使用 `.invalid`、loopback 和占位名称。
 - 不得把应用端口直接暴露到公网。使用 TLS 反向代理、可信 Origin allowlist、请求体上限、速率限制和 WebSocket Upgrade 校验。

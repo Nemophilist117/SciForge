@@ -1,0 +1,7 @@
+**
+!Dockerfile.runtime
+!bundle/
+!bundle/*.tgz
+!bundle/package.json
+!bundle/package-lock.json
+!bundle/CONTRACT_COMMIT
