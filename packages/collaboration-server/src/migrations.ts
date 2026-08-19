@@ -2,17 +2,18 @@ import { readFile } from 'node:fs/promises'
 
 import type { SqlPool } from './postgres.js'
 
-export const COLLABORATION_SCHEMA_VERSION = 5
+export const COLLABORATION_SCHEMA_VERSION = 6
 
 const COLLABORATION_MIGRATIONS = [
   '0001_collaboration_schema.sql',
   '0002_resource_refs.sql',
   '0003_task_progress.sql',
   '0004_coordination_contract.sql',
-  '0005_unified_identity_device_bindings.sql'
+  '0005_unified_identity_device_bindings.sql',
+  '0006_portable_resource_refs.sql'
 ] as const
 
-const REQUIRED_MIGRATION_VERSIONS = [1, 2, 3, 4, 5] as const
+const REQUIRED_MIGRATION_VERSIONS = [1, 2, 3, 4, 5, 6] as const
 
 const REQUIRED_TABLES = [
   'action_confirmations',
@@ -171,6 +172,7 @@ const REQUIRED_COLUMN_TYPES = {
     kind: 'text',
     name: 'text',
     open_url: 'text',
+    portable_reference: 'text',
     provider_version: 'text',
     status: 'text',
     status_reason_code: 'text',
@@ -274,6 +276,7 @@ const REQUIRED_CONSTRAINTS = {
   ],
   resource_refs: [
     'resource_refs_open_url_safe',
+    'resource_refs_portable_reference_safe',
     'resource_refs_provenance_complete',
     'resource_refs_status_reason_format',
     'resource_refs_status_timestamp_consistent'

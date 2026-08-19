@@ -32,6 +32,7 @@
   "commitInjectionPlaceholder": "__SCIFORGE_COLLABORATION_COMMIT__",
   "contractCommit": "__SCIFORGE_COLLABORATION_COMMIT__",
   "contractVersion": "1.0",
+  "databaseSchemaVersion": 6,
   "files": [
     {
       "bytes": 1386,
@@ -54,6 +55,41 @@
       "sha256": "df125175ce009d41dad4cca2aac8775e745327783d1584e6649760f7cdb136d8"
     },
     {
+      "bytes": 5537,
+      "path": "fixtures/portable-artifact-digest-boundary.json",
+      "sha256": "bce0afd39aec1db1e574218f27469f4e0255d93e30c4bd9aea5eb0d0dc744b66"
+    },
+    {
+      "bytes": 4520,
+      "path": "fixtures/portable-input-file-reference.json",
+      "sha256": "14dc69e5ef0e4c14ec231784893e9dd6fd01746a758f790c9cc7c0b72c481d34"
+    },
+    {
+      "bytes": 2579,
+      "path": "fixtures/portable-invalid-version-kind.json",
+      "sha256": "3a40752ffc0197b8325b0287ee86785957f74980770c48d6a1d6cf8a91ce90a2"
+    },
+    {
+      "bytes": 4655,
+      "path": "fixtures/portable-output-container-reference.json",
+      "sha256": "3a7324434bd88bac5837f49e7e1f48169bbb1610b40ebc2c1ac12563fdd40b7a"
+    },
+    {
+      "bytes": 7118,
+      "path": "fixtures/portable-reference-maximum-length.json",
+      "sha256": "b533b0ce089e39c40e0f5e204b4b10a4f047ff1286f5edb628cc9350cafd0f1b"
+    },
+    {
+      "bytes": 4594,
+      "path": "fixtures/portable-reference-without-open-url.json",
+      "sha256": "0ebdf82dc740c053285a49f197179cc84900407fbc5164b92e5244087f655e0b"
+    },
+    {
+      "bytes": 4660,
+      "path": "fixtures/portable-uploaded-mutable-file-reference.json",
+      "sha256": "351b20f1a948fc028d0bf6c7a996f31e8d213e044f27a50512e648da86c1c481"
+    },
+    {
       "bytes": 1446,
       "path": "fixtures/revision-conflict.json",
       "sha256": "c10a180081d52a6758a76059a7ebe51bac02d82d8fd2594aea00a102592595d7"
@@ -69,14 +105,14 @@
       "sha256": "d2920fd91f71f5aa37a08427de38b8fff8da43b32a0be0cfb621da1aa7a167ee"
     },
     {
-      "bytes": 89656,
+      "bytes": 91328,
       "path": "schemas/commands.schema.json",
-      "sha256": "72be98ef65e43c85057f09549acb919678ce82fdf0397b2057fadabdde07c148"
+      "sha256": "228ebe985a743858f98392143bc891d028f215006cba397d823f99008356602a"
     },
     {
-      "bytes": 156801,
+      "bytes": 158919,
       "path": "schemas/entities.schema.json",
-      "sha256": "e0931f70ddde23e8450b1e15ca032cb8a556208220b2d85733ee23b354aa2569"
+      "sha256": "65476cf17a351a9056778aac8d144d42654a96b744b574727ed34dc8778d129f"
     },
     {
       "bytes": 3950,
@@ -89,9 +125,9 @@
       "sha256": "9d699821afa35d96a8e15dd3f3fd0750ad1a037477b862ab41ff1bc135b0fbd9"
     },
     {
-      "bytes": 522926,
+      "bytes": 527530,
       "path": "schemas/responses.schema.json",
-      "sha256": "bc4de12fef06c83237ed0c4ca82a21fed0d6c60eb6f6bebde2c9490cafdc1797"
+      "sha256": "17461441406f23363b70a1a117f5c76436c1810a851d9490fc6044ba6647981b"
     },
     {
       "bytes": 19986,
@@ -100,6 +136,27 @@
     }
   ],
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "packages": {
+    "@sciforge/collaboration-contracts": "0.1.0",
+    "@sciforge/domain-content-space": "1.0.0",
+    "@sciforge/domain-sdk": "0.2.1"
+  },
+  "portableResourceCarrier": {
+    "contentSpaceContractPath": "packages/domains/content-space/src/contract.ts",
+    "contentSpaceContractSourceSha256": "5d7a0967591c8b1e33c207fb41d4429374a9b6f9c761a3c9e2395ea146c53e3d",
+    "kinds": [
+      "content-space.file-reference",
+      "content-space.container-reference",
+      "content-space.artifact-reference"
+    ],
+    "openUrlRequired": false,
+    "parserSourceSha256": "af402fbb108a02588c9af7a684146ff12fe0bf48f35b534c4b5f3f233e5d650d",
+    "schemaVersion": "1.0.0",
+    "upstreamCommit": "e58ed48e94812d0c56da48ab7387f53135439cc5",
+    "upstreamParserPath": "packages/domain-sdk/src/portable-resource-references.ts",
+    "upstreamRepository": "SCU-areszhang/SciForge_Loop",
+    "validationAuthority": "@sciforge/domain-sdk/portable-resource-references"
+  },
   "protocolVersion": "1.0",
   "source": "packages/collaboration-contracts/src strict Zod exports"
 }

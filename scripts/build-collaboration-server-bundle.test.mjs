@@ -22,6 +22,18 @@ const privateTestCommit = 'a63155e8d378693bfeba5a926e12b74eeafb3cf8'
 const sourceRepositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function validFilesFor(packageName) {
+  if (packageName === '@sciforge/domain-sdk') {
+    return [
+      'package.json',
+      'portable-resource-provenance.json',
+      'dist/contract.js',
+      'dist/contract.d.ts',
+      'dist/principal.js',
+      'dist/principal.d.ts',
+      'dist/portable-resource-references.js',
+      'dist/portable-resource-references.d.ts'
+    ]
+  }
   if (packageName === '@sciforge/collaboration-contracts') {
     return [
       'package.json',
@@ -144,7 +156,10 @@ async function createRepository() {
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'package.json'), `${JSON.stringify({
       name: specification.name,
-      version: '0.1.0'
+      version: '0.1.0',
+      ...(specification.name === '@sciforge/domain-sdk'
+        ? { dependencies: { zod: '^4.4.3' } }
+        : {})
     })}\n`)
     if (specification.name === '@sciforge/collaboration-contracts') {
       await mkdir(join(directory, 'dist'), { recursive: true })
@@ -154,6 +169,11 @@ async function createRepository() {
       await writeFile(
         join(directory, 'artifacts', 'protocol-1.0', 'ARTIFACT_MANIFEST.json'),
         stringifyJson({ contractCommit: '__SCIFORGE_COLLABORATION_COMMIT__' })
+      )
+    } else if (specification.name === '@sciforge/domain-sdk') {
+      await writeFile(
+        join(directory, 'portable-resource-provenance.json'),
+        stringifyJson({ schemaVersion: 1, package: specification.name })
       )
     }
   }
@@ -192,11 +212,23 @@ function createCommandHarness({
 
     if (basename(command).startsWith('npm') && args.includes('run')) {
       const packageName = args[args.indexOf('--workspace') + 1]
-      if (packageName === '@sciforge/collaboration-contracts') {
-        const directory = join(cwd, 'packages/collaboration-contracts/dist')
+      if (
+        packageName === '@sciforge/collaboration-contracts' ||
+        packageName === '@sciforge/domain-sdk'
+      ) {
+        const directory = join(
+          cwd,
+          packageName === '@sciforge/domain-sdk'
+            ? 'packages/domain-sdk/dist'
+            : 'packages/collaboration-contracts/dist'
+        )
         await mkdir(directory, { recursive: true })
-        await writeFile(join(directory, 'index.js'), 'export {}\n')
-        await writeFile(join(directory, 'index.d.ts'), 'export {}\n')
+        for (const relativePath of validFilesFor(packageName)) {
+          if (!relativePath.startsWith('dist/')) continue
+          const destination = join(directory, relativePath.slice('dist/'.length))
+          await mkdir(dirname(destination), { recursive: true })
+          await writeFile(destination, 'export {}\n')
+        }
       }
       return { stdout: '', stderr: '' }
     }
@@ -279,17 +311,26 @@ test('CLI requires a complete immutable commit argument', () => {
     commit: approvedCommit,
     outputDirectory: 'release',
     privateTestRelease: false,
-    teamPrivateAcceptance: false
+    teamPrivateAcceptance: false,
+    crossTeamR0Contract: false
   })
   assert.deepEqual(parseArguments(['--private-test-release']), {
     help: false,
     privateTestRelease: true,
-    teamPrivateAcceptance: false
+    teamPrivateAcceptance: false,
+    crossTeamR0Contract: false
   })
   assert.deepEqual(parseArguments(['--team-private-acceptance']), {
     help: false,
     privateTestRelease: false,
-    teamPrivateAcceptance: true
+    teamPrivateAcceptance: true,
+    crossTeamR0Contract: false
+  })
+  assert.deepEqual(parseArguments(['--cross-team-r0-contract']), {
+    help: false,
+    privateTestRelease: false,
+    teamPrivateAcceptance: false,
+    crossTeamR0Contract: true
   })
   assert.throws(() => parseArguments([
     '--private-test-release', '--private-test-release'
@@ -299,6 +340,9 @@ test('CLI requires a complete immutable commit argument', () => {
   ]), /only be provided once/u)
   assert.throws(() => parseArguments([
     '--private-test-release', '--team-private-acceptance'
+  ]), /mutually exclusive/u)
+  assert.throws(() => parseArguments([
+    '--cross-team-r0-contract', '--team-private-acceptance'
   ]), /mutually exclusive/u)
   assert.throws(() => parseArguments(['--output']), /Missing value/u)
   assert.throws(() => parseArguments(['--unknown']), /Unknown argument/u)
@@ -454,7 +498,8 @@ test('builder emits only immutable release files and pins all official packages'
       'package.json',
       'sciforge-collaboration-contracts-0.1.0.tgz',
       'sciforge-collaboration-provider-zulip-0.1.0.tgz',
-      'sciforge-collaboration-server-0.1.0.tgz'
+      'sciforge-collaboration-server-0.1.0.tgz',
+      'sciforge-domain-sdk-0.1.0.tgz'
     ])
     assert.equal(await readFile(join(outputDirectory, 'CONTRACT_COMMIT'), 'utf8'), `${approvedCommit}\n`)
 
@@ -468,7 +513,7 @@ test('builder emits only immutable release files and pins all official packages'
     assert.equal(manifest.contractCommit, approvedCommit)
     assert.equal(manifest.releaseMode, 'origin-gui')
     assert.equal(Object.hasOwn(manifest, 'baseCommit'), false)
-    assert.equal(manifest.packages.length, 3)
+    assert.equal(manifest.packages.length, 4)
     for (const packageEntry of manifest.packages) {
       assert.equal(packageEntry.version, '0.1.0')
       const archive = await readFile(join(outputDirectory, packageEntry.filename))
@@ -495,17 +540,21 @@ test('builder emits only immutable release files and pins all official packages'
     )
 
     const checksumLines = (await readFile(join(outputDirectory, 'SHA256SUMS'), 'utf8')).trim().split('\n')
-    assert.equal(checksumLines.length, 7)
+    assert.equal(checksumLines.length, 8)
     assert.equal(harness.calls.filter(({ args }) => (
       args[0] === 'scripts/collaboration-providers.mjs' && args[1] === '--check'
     )).length, 1)
-    assert.equal(harness.calls.filter(({ args }) => args.includes('run') && args.includes('build')).length, 3)
-    assert.equal(harness.calls.filter(({ args }) => args[0] === 'pack').length, 3)
+    assert.equal(harness.calls.filter(({ args }) => args.includes('run') && args.includes('build')).length, 4)
+    assert.equal(harness.calls.filter(({ args }) => args[0] === 'pack').length, 4)
     const contractsPackCall = harness.calls.find(({ args }) => (
-      args[0] === 'pack' && !args.includes('--workspace')
+      args[0] === 'pack' && args[1]?.endsWith('.collaboration-contracts-package')
     ))
     assert.ok(contractsPackCall)
     assert.match(contractsPackCall.args[1], /\.collaboration-contracts-package$/u)
+    const domainSdkPackCall = harness.calls.find(({ args }) => (
+      args[0] === 'pack' && args[1]?.endsWith('.domain-sdk-package')
+    ))
+    assert.ok(domainSdkPackCall)
     assert.deepEqual(harness.calls.find(({ args }) => args[0] === 'merge-base')?.args, [
       'merge-base', '--is-ancestor', approvedCommit, 'origin/gui'
     ])
@@ -617,6 +666,40 @@ test('team private acceptance is explicit and records commit, base, mode, and tu
     assert.deepEqual(harness.calls.find(({ args }) => args[0] === 'merge-base')?.args, [
       'merge-base', '--is-ancestor', approvedCommit, privateTestCommit
     ])
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true })
+  }
+})
+
+test('cross-team R0 contract release is public, fixed, and explicitly non-deployable', async () => {
+  const repositoryRoot = await createRepository()
+  const outputDirectory = join(repositoryRoot, 'cross-team-r0-contract')
+  const messages = []
+  const harness = createCommandHarness({
+    headCommit: privateTestCommit,
+    isAncestor: (ancestor, descendant) => (
+      ancestor === approvedCommit && descendant === privateTestCommit
+    ),
+    originGuiCommit: approvedCommit
+  })
+  try {
+    const result = await buildCollaborationServerBundle({
+      ...testBundleDependencies,
+      commit: privateTestCommit,
+      crossTeamR0Contract: true,
+      log: (message) => messages.push(message),
+      outputDirectory,
+      repositoryRoot,
+      runCommand: harness.runCommand
+    })
+    assert.equal(result.commit, privateTestCommit)
+    const manifest = JSON.parse(await readFile(join(outputDirectory, 'RELEASE_MANIFEST.json'), 'utf8'))
+    assert.equal(manifest.contractCommit, privateTestCommit)
+    assert.equal(manifest.baseCommit, approvedCommit)
+    assert.equal(manifest.releaseMode, 'cross-team-r0-contract')
+    assert.equal(manifest.deploymentBoundary, 'contract-consumption-only')
+    assert.match(messages.join('\n'), /CROSS-TEAM R0 CONTRACT/u)
+    assert.match(messages.join('\n'), /not a production deployment approval/u)
   } finally {
     await rm(repositoryRoot, { recursive: true, force: true })
   }

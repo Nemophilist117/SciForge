@@ -1898,10 +1898,11 @@ export class CollaborationService {
       kind: input.kind,
       name: input.name,
       openUrl: input.openUrl,
+      portableReference: input.portableReference,
       version: input.version
     })
     if (!parsed.success) {
-      fail('validation_failed', 'ResourceRef accepts bounded metadata and HTTPS references only.')
+      fail('validation_failed', 'ResourceRef accepts bounded metadata, optional safe HTTPS links, and canonical portable references only.')
     }
     if (new Set([input.taskId, input.executionId, input.expectedTaskRevision].map((value) => value === undefined)).size > 1) {
       fail('validation_failed', 'Task-scoped ResourceRef requires Task, execution, and revision together.')

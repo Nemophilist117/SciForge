@@ -237,9 +237,9 @@ sudo deploy/collaboration-private/scripts/verify-backup-restore.sh \
 
 本地备份只是第一层。每份 dump 和 sidecar 还应复制到加密的异机存储。灾难恢复仍应使用新的 volume；不得直接覆盖唯一生产 volume。
 
-### PostgreSQL v5 隔离业务语义验收
+### PostgreSQL schema v6 隔离业务语义验收
 
-固定 v5 bundle 传到 release 目录后、运行 `deploy.sh` 迁移生产库之前，在无业务写入的维护窗口先运行一次真实 PostgreSQL 隔离验收：
+固定 schema v6 bundle 传到 release 目录后、运行 `deploy.sh` 迁移生产库之前，在无业务写入的维护窗口先运行一次真实 PostgreSQL 隔离验收。脚本文件名中的 `v5` 是既有验收工具名，不代表候选数据库仍停留在 v5：
 
 ```bash
 sudo deploy/collaboration-private/scripts/verify-postgres-v5-integration.sh \
@@ -250,7 +250,7 @@ sudo deploy/collaboration-private/scripts/verify-postgres-v5-integration.sh \
 
 脚本与 core/provider 部署共享同一个非阻塞 deploy lock，并在锁内先执行候选 release 的 `docker compose build app`；这一步只构建带固定 revision 的候选 image，不停止或替换当前 app、不启动或重启 PostgreSQL，也不迁移生产库。当前 live app 可以仍是上一固定 commit，脚本会记录它的 container ID、host PID、RestartCount、image 和 revision，并要求前后完全不变。它还要求 PostgreSQL 只连接 `internal=true` 的专用 Compose network 且没有宿主机端口，然后用候选 runtime image 中已经安装的生产 `dist`、migration 和依赖启动一次性非 root runner；不会向 ECS 复制源码、test fixture、Vitest、tsx 或开发依赖。隔离验收通过后再运行 `deploy.sh`；后者会复用候选 image build cache、备份并迁移生产库。
 
-管理员密码不会进入 Docker Config、命令参数、URL 环境变量或日志。宿主机只在 `/run` tmpfs 创建一个 `root:10001/0440` 的 64 位十六进制单值文件，并只读挂载给 runner；runner 在内存中构造固定指向 `postgres:5432/postgres` 的管理员 URL。它创建名称严格匹配 `sciforge_identity_v5_it_<pid>_<12位hex>` 的随机临时数据库，在其中验证 v1→v5 readiness、旧 Agent 撤销、并发 OIDC JIT、Device→Agent 生命周期和 Zulip binding 唯一性，随后在 `finally` 中终止连接并删除该库。外层 trap 只在运行前确认没有同前缀遗留库后，才会按同一严格正则清理本次异常退出的残留；绝不把 `sciforge_collaboration` 作为删除目标。
+管理员密码不会进入 Docker Config、命令参数、URL 环境变量或日志。宿主机只在 `/run` tmpfs 创建一个 `root:10001/0440` 的 64 位十六进制单值文件，并只读挂载给 runner；runner 在内存中构造固定指向 `postgres:5432/postgres` 的管理员 URL。它创建名称严格匹配 `sciforge_identity_v5_it_<pid>_<12位hex>` 的随机临时数据库，在其中验证 v1→当前 schema v6 readiness、旧 Agent 撤销、并发 OIDC JIT、Device→Agent 生命周期和 Zulip binding 唯一性，随后在 `finally` 中终止连接并删除该库。外层 trap 只在运行前确认没有同前缀遗留库后，才会按同一严格正则清理本次异常退出的残留；绝不把 `sciforge_collaboration` 作为删除目标。
 
 验收会以生产库当时的实际 migration versions 和实际表集为准（允许它仍是 v3/v4）。前后快照各自在独立的、受限的候选镜像容器内运行，不向 live app 容器注入代码或占用其 cgroup；容器只读挂载单值 `sciforge_collab` 密码文件，不把数据库 URL 或密码放进 Docker env/argv。每次快照使用单个 `REPEATABLE READ READ ONLY` 事务，对每张实际表声明 server-side cursor，并以 `FETCH FORWARD 512` 有界流式计算 row count 和稳定内容 SHA-256；只保留表名、计数及摘要，不输出行内容，并要求运行前后整个快照完全相同。为避免并发业务写入造成误报或掩盖边界，本步骤必须处于无业务写入的维护窗口。live app 的 container ID、host PID、RestartCount、image 和 revision 也必须完全相同。runner 原始日志先保存在 root-only tmpfs 文件中，并同时扫描实际管理员密码、应用数据库密码、认证 URL、连接参数、stack 和 `secretKey`；只有通过扫描后才输出脱敏 pass receipt。注意：`CREATE/DROP DATABASE` 必然写 PostgreSQL 集群 catalog/WAL，但所有业务 fixture 只写随机临时数据库，不写生产 `sciforge_collaboration`。
 

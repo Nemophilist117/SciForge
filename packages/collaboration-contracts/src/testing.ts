@@ -329,6 +329,7 @@ export const resourceRefFixture = resourceRefSchema.parse({
   kind: 'shared_document',
   name: '模型分析记录',
   openUrl: 'https://content.example.invalid/resources/document-42',
+  portableReference: null,
   version: '1',
   status: 'available',
   statusReasonCode: null,

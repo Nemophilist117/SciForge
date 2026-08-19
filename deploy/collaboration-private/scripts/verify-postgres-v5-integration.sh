@@ -38,8 +38,8 @@ fi
 
 validate_release_bundle "$expected_commit"
 expected_schema_version="$(expected_collaboration_schema_version)"
-[[ "$expected_schema_version" == 5 ]] \
-  || die "PostgreSQL v5 integration requires a release whose validated migration truth is exactly v5."
+[[ "$expected_schema_version" == 6 ]] \
+  || die "The isolated PostgreSQL integration requires a release whose validated migration truth is exactly schema v6."
 prepare_compose_environment "$expected_commit" "$env_input"
 "${COMPOSE[@]}" config --quiet
 
@@ -435,7 +435,7 @@ cat "$log_file"
 [[ "$runner_exit_code" == 0 ]] || die "The PostgreSQL v5 integration runner failed."
 grep -Fq '"event":"postgres.v5.integration","status":"passed"' "$log_file" \
   || die "The PostgreSQL v5 integration runner did not emit its pass receipt."
-for required_check in v1_to_v5_readiness legacy_agent_revocation concurrent_oidc_jit \
+for required_check in v1_to_current_readiness legacy_agent_revocation concurrent_oidc_jit \
   device_agent_lifecycle zulip_binding_uniqueness; do
   grep -Fq "\"$required_check\"" "$log_file" \
     || die "The PostgreSQL v5 pass receipt is missing a required check."

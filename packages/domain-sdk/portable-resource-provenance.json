@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "package": "@sciforge/domain-sdk",
+  "packageVersion": "0.2.1",
+  "portableReferenceContractVersion": 1,
+  "portableResourceCompositionContractVersion": "1.0.0",
+  "upstream": {
+    "repository": "SCU-areszhang/SciForge_Loop",
+    "commit": "e58ed48e94812d0c56da48ab7387f53135439cc5",
+    "packageVersion": "0.2.1",
+    "path": "packages/domain-sdk/src/portable-resource-references.ts",
+    "sha256": "af402fbb108a02588c9af7a684146ff12fe0bf48f35b534c4b5f3f233e5d650d"
+  },
+  "integratedBaseline": {
+    "repository": "hanhuiyang5-web/SciForge",
+    "branch": "feat/a-cloud-collaboration-service",
+    "commit": "5cbe70f0099abe115fb7f26f2a810e90346a815a"
+  },
+  "contentSpaceContract": {
+    "repository": "SCU-areszhang/SciForge_Loop",
+    "commit": "e58ed48e94812d0c56da48ab7387f53135439cc5",
+    "path": "packages/domains/content-space/src/contract.ts",
+    "sha256": "5d7a0967591c8b1e33c207fb41d4429374a9b6f9c761a3c9e2395ea146c53e3d"
+  }
+}

@@ -32,15 +32,15 @@ type MigrationEvidence = Readonly<{
   postgresVersion: string
   postgresVersionNumber: string
   versionsAtV1: number[]
-  versionsAtV5: number[]
+  versionsAtCurrent: number[]
   readyAtV1: boolean
-  readyAtV5: boolean
+  readyAtCurrent: boolean
   legacyAgentStatus: string
   legacyAgentDeviceId: unknown
   legacyCredentialRevoked: boolean
 }>
 
-describePostgresV5('real PostgreSQL v1 -> v5 unified identity integration', () => {
+describePostgresV5('real PostgreSQL v1 -> current-schema unified identity integration', () => {
   let adminPool: SqlPool | undefined
   let databasePool: SqlPool | undefined
   let repository: PostgresCollaborationRepository | undefined
@@ -83,8 +83,8 @@ describePostgresV5('real PostgreSQL v1 -> v5 unified identity integration', () =
     const readyAtV1 = await isCollaborationDatabaseReady(databasePool)
 
     await runCollaborationMigrations(databasePool)
-    const versionsAtV5 = await migrationVersions(databasePool)
-    const readyAtV5 = await isCollaborationDatabaseReady(databasePool)
+    const versionsAtCurrent = await migrationVersions(databasePool)
+    const readyAtCurrent = await isCollaborationDatabaseReady(databasePool)
     const legacyAgent = await databasePool.query<{
       status: unknown
       device_id: unknown
@@ -104,9 +104,9 @@ describePostgresV5('real PostgreSQL v1 -> v5 unified identity integration', () =
       postgresVersion: String(version.rows[0]?.server_version),
       postgresVersionNumber: String(versionNumber.rows[0]?.server_version_num),
       versionsAtV1,
-      versionsAtV5,
+      versionsAtCurrent,
       readyAtV1,
-      readyAtV5,
+      readyAtCurrent,
       legacyAgentStatus: String(legacy.status),
       legacyAgentDeviceId: legacy.device_id,
       legacyCredentialRevoked: legacy.credential_revoked === true
@@ -117,7 +117,7 @@ describePostgresV5('real PostgreSQL v1 -> v5 unified identity integration', () =
     authentication = new AuthenticationService(repository, now)
     process.stdout.write(
       `[postgres-v5-integration] node=${process.version} postgres=${migrationEvidence.postgresVersion} ` +
-      `postgresVersionNumber=${migrationEvidence.postgresVersionNumber} migrations=${versionsAtV5.join(',')} ready=${String(readyAtV5)}\n`
+      `postgresVersionNumber=${migrationEvidence.postgresVersionNumber} migrations=${versionsAtCurrent.join(',')} ready=${String(readyAtCurrent)}\n`
     )
   }, 120_000)
 
@@ -143,13 +143,13 @@ describePostgresV5('real PostgreSQL v1 -> v5 unified identity integration', () =
     }
   }, 120_000)
 
-  it('migrates an isolated v1 database to exact v5 readiness and revokes unmapped legacy Agents', async () => {
-    expect(COLLABORATION_SCHEMA_VERSION).toBe(5)
+  it('migrates an isolated v1 database to exact schema v6 readiness and revokes unmapped legacy Agents', async () => {
+    expect(COLLABORATION_SCHEMA_VERSION).toBe(6)
     expect(migrationEvidence).toMatchObject({
       versionsAtV1: [1],
-      versionsAtV5: [1, 2, 3, 4, 5],
+      versionsAtCurrent: [1, 2, 3, 4, 5, 6],
       readyAtV1: false,
-      readyAtV5: true,
+      readyAtCurrent: true,
       legacyAgentStatus: 'revoked',
       legacyAgentDeviceId: null,
       legacyCredentialRevoked: true

@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   collaborationErrorSchema,
   inboxMessageSchema,
+  portableResourceReferenceCarrierSchema,
   restEntitySchema,
   restRequestSchema,
   restResponseSchema
@@ -44,6 +45,23 @@ test('manifest hashes every schema, state table, and fixture without claiming bu
   assert.equal(manifest.acceptance.businessEndToEnd.status, 'not-open')
   assert.equal(manifest.acceptance.identityProvider.status, 'not-selected')
   assert.equal(manifest.acceptance.formalProductTransport.status, 'not-selected')
+  assert.equal(manifest.packages['@sciforge/collaboration-contracts'], '0.1.0')
+  assert.equal(manifest.packages['@sciforge/domain-sdk'], '0.2.1')
+  assert.equal(manifest.packages['@sciforge/domain-content-space'], '1.0.0')
+  assert.equal(manifest.databaseSchemaVersion, 6)
+  assert.equal(manifest.portableResourceCarrier.schemaVersion, '1.0.0')
+  assert.equal(manifest.portableResourceCarrier.upstreamCommit,
+    'e58ed48e94812d0c56da48ab7387f53135439cc5')
+  assert.equal(manifest.portableResourceCarrier.validationAuthority,
+    '@sciforge/domain-sdk/portable-resource-references')
+  assert.equal(manifest.portableResourceCarrier.contentSpaceContractSourceSha256,
+    '5d7a0967591c8b1e33c207fb41d4429374a9b6f9c761a3c9e2395ea146c53e3d')
+  assert.deepEqual(manifest.portableResourceCarrier.kinds, [
+    'content-space.file-reference',
+    'content-space.container-reference',
+    'content-space.artifact-reference'
+  ])
+  assert.equal(manifest.portableResourceCarrier.openUrlRequired, false)
   assert.equal(manifest.files.length, files.size - 1)
   for (const entry of manifest.files) {
     const content = files.get(entry.path)
@@ -51,6 +69,17 @@ test('manifest hashes every schema, state table, and fixture without claiming bu
     assert.equal(entry.sha256, createHash('sha256').update(content).digest('hex'), entry.path)
     assert.equal(entry.bytes, Buffer.byteLength(content), entry.path)
   }
+})
+
+test('integrated portable parser remains byte-identical to E pinned commit provenance', async () => {
+  const source = await readFile(join(
+    ARTIFACT_DIRECTORY,
+    '../../../domain-sdk/src/portable-resource-references.ts'
+  ))
+  assert.equal(
+    createHash('sha256').update(source).digest('hex'),
+    'af402fbb108a02588c9af7a684146ff12fe0bf48f35b534c4b5f3f233e5d650d'
+  )
 })
 
 test('JSON Schemas expose the complete strict public roots and actor table', () => {
@@ -203,7 +232,9 @@ test('fixtures cover required compatibility and ordering scenarios with valid pu
     'revision-conflict',
     'idempotency-conflict',
     'execution-conflict',
-    'confirmation-conflict'
+    'confirmation-conflict',
+    'portable-round-trip',
+    'portable-rejection'
   ]))
   for (const fixture of fixtures) {
     assert.equal(fixture.protocolVersion, '1.0')
@@ -221,6 +252,20 @@ test('fixtures cover required compatibility and ordering scenarios with valid pu
   assert.deepEqual(outOfOrder.expectations.serverCursorAtGap, { ackedSequence: 11, nextSequence: 12 })
   assert.equal(fixtures.find((fixture) => fixture.category === 'execution-conflict').contractStatus, 'current')
   assert.equal(fixtures.find((fixture) => fixture.category === 'confirmation-conflict').contractStatus, 'current')
+  const portableRoundTrips = fixtures.filter((fixture) => fixture.category === 'portable-round-trip')
+  assert.equal(portableRoundTrips.length, 6)
+  for (const fixture of portableRoundTrips) {
+    const create = fixture.documents.find((document) => document.role === 'create-request').value
+    const fetched = fixture.documents.find((document) => document.role === 'get-response').value.entity
+    assert.equal('openUrl' in create, false, fixture.id)
+    assert.equal(fetched.openUrl, null, fixture.id)
+    assert.deepEqual(fetched.portableReference, create.portableReference, fixture.id)
+  }
+  const rejected = fixtures.find((fixture) => fixture.category === 'portable-rejection')
+  for (const request of rejected.expectations.rejectedRequests) {
+    assert.equal(portableResourceReferenceCarrierSchema.safeParse(request.portableReference).success, false)
+    assert.equal(restRequestSchema.safeParse(request).success, false)
+  }
 })
 
 test('release generation can inject one fixed commit without changing the source artifact set', () => {

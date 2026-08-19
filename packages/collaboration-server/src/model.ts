@@ -1,3 +1,5 @@
+import type { PortableResourceReferenceCarrier } from '@sciforge/collaboration-contracts'
+
 export type Assurance = 'basic' | 'verified' | 'strong' | 'device'
 export type ResourceStatus = 'active' | 'suspended' | 'revoked'
 
@@ -370,7 +372,8 @@ export type StoredResourceRef = {
   externalId: string
   kind: string
   name: string
-  openUrl: string
+  openUrl?: string
+  portableReference?: PortableResourceReferenceCarrier
   version?: string
   status: 'available' | 'unavailable' | 'revoked' | 'invalidated'
   statusReasonCode?: string

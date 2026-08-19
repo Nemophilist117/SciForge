@@ -185,10 +185,10 @@ async function run() {
     const versionsAtV1 = await migrationVersions(databasePool)
     const readyAtV1 = await runtime.isCollaborationDatabaseReady(databasePool)
 
-    stage = 'migration_v1_to_v5'
+    stage = 'migration_v1_to_current'
     await runtime.runCollaborationMigrations(databasePool)
-    const versionsAtV5 = await migrationVersions(databasePool)
-    const readyAtV5 = await runtime.isCollaborationDatabaseReady(databasePool)
+    const versionsAtCurrent = await migrationVersions(databasePool)
+    const readyAtCurrent = await runtime.isCollaborationDatabaseReady(databasePool)
     const legacyAgent = await databasePool.query(
       `SELECT agent.status, agent.device_id,
               credential.revoked_at IS NOT NULL AS credential_revoked
@@ -200,11 +200,11 @@ async function run() {
     )
     const legacy = legacyAgent.rows[0]
     assert.ok(legacy)
-    assert.equal(runtime.COLLABORATION_SCHEMA_VERSION, 5)
+    assert.equal(runtime.COLLABORATION_SCHEMA_VERSION, 6)
     assert.deepEqual(versionsAtV1, [1])
-    assert.deepEqual(versionsAtV5, [1, 2, 3, 4, 5])
+    assert.deepEqual(versionsAtCurrent, [1, 2, 3, 4, 5, 6])
     assert.equal(readyAtV1, false)
-    assert.equal(readyAtV5, true)
+    assert.equal(readyAtCurrent, true)
     assert.equal(legacy.status, 'revoked')
     assert.equal(legacy.device_id, null)
     assert.equal(legacy.credential_revoked, true)
@@ -232,9 +232,9 @@ async function run() {
     evidence = {
       postgresVersion: String(version.rows[0]?.server_version),
       postgresVersionNumber: String(versionNumber.rows[0]?.server_version_num),
-      migrations: versionsAtV5,
+      migrations: versionsAtCurrent,
       checks: [
-        'v1_to_v5_readiness',
+        'v1_to_current_readiness',
         'legacy_agent_revocation',
         'concurrent_oidc_jit',
         'device_agent_lifecycle',

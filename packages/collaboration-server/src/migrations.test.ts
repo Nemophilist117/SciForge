@@ -66,7 +66,7 @@ const REQUIRED_COLUMN_TYPES = {
   resource_refs: {
     resource_ref_id: 'text', project_id: 'text', task_id: 'text', execution_id: 'text', task_revision: 'bigint',
     created_by_user_id: 'text', created_by_agent_id: 'text', provider: 'text', external_id: 'text',
-    kind: 'text', name: 'text', open_url: 'text', provider_version: 'text', status: 'text',
+    kind: 'text', name: 'text', open_url: 'text', portable_reference: 'text', provider_version: 'text', status: 'text',
     status_reason_code: 'text', unavailable_at: 'timestamp with time zone', revoked_at: 'timestamp with time zone',
     invalidated_at: 'timestamp with time zone', revision: 'bigint',
     created_at: 'timestamp with time zone', updated_at: 'timestamp with time zone'
@@ -132,6 +132,7 @@ const REQUIRED_CONSTRAINTS = {
   ],
   resource_refs: [
     'resource_refs_open_url_safe',
+    'resource_refs_portable_reference_safe',
     'resource_refs_provenance_complete',
     'resource_refs_status_reason_format',
     'resource_refs_status_timestamp_consistent'
@@ -230,10 +231,10 @@ describe('collaboration database readiness', () => {
   })
 
   it.each([
-    { label: 'a missing migration', versions: [1, 2, 3, 5] },
-    { label: 'an extra future migration', versions: [1, 2, 3, 4, 5, 6] },
-    { label: 'a duplicate migration marker', versions: [1, 2, 3, 4, 4, 5] },
-    { label: 'a malformed migration marker', versions: [1, 2, 3, 4, 'not-a-version'] }
+    { label: 'a missing migration', versions: [1, 2, 3, 5, 6] },
+    { label: 'an extra future migration', versions: [1, 2, 3, 4, 5, 6, 7] },
+    { label: 'a duplicate migration marker', versions: [1, 2, 3, 4, 5, 5, 6] },
+    { label: 'a malformed migration marker', versions: [1, 2, 3, 4, 5, 'not-a-version'] }
   ])('rejects $label', async ({ versions }) => {
     await expect(isCollaborationDatabaseReady(poolFor({ versions }))).resolves.toBe(false)
   })
@@ -313,7 +314,7 @@ function poolFor(state: ReadyState = {}): SqlPool {
     query: async (text) => {
       if (text.includes('schema_migrations')) {
         if (state.failQuery === 'versions') throw new Error('private migration query detail')
-        const rows = (state.versions ?? [1, 2, 3, 4, 5]).map((version) => ({ version }))
+        const rows = (state.versions ?? [1, 2, 3, 4, 5, 6]).map((version) => ({ version }))
         return { rows, rowCount: rows.length }
       }
       if (text.includes('information_schema.tables')) {

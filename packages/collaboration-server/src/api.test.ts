@@ -1,6 +1,13 @@
 import type { AddressInfo } from 'node:net'
 
-import type { HumanEndpointProviderContract } from '@sciforge/collaboration-contracts'
+import {
+  type HumanEndpointProviderContract
+} from '@sciforge/collaboration-contracts'
+import {
+  parsePortableContentFileReference,
+  toPortableContentFileReference
+// @ts-expect-error Test-only E contract bridge is runtime-typed by its source package.
+} from '../../../test-fixtures/collaboration/e-content-space-portable.mjs'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { FakeCollaborationRepository } from '../../../test-fixtures/collaboration/fake-adapters.mjs'
@@ -484,6 +491,41 @@ describe('production HTTP authentication boundary', () => {
     expect(fetched.status).toBe(200)
     await expect(fetched.json()).resolves.toMatchObject({ entity: { resourceRefId: created.entity.resourceRefId,
       openUrl: createBody.openUrl, status: 'available' } })
+
+    const uploadedMutableFile = {
+      providerInstanceRef: 'opencontent.personal',
+      fileId: 'uploaded_mutable_file_001'
+    }
+    const portableCreate = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiPortableCreate1', type: 'resource.create',
+      idempotencyKey: 'idem_api_portable_create_01', projectId: project.projectId,
+      taskId: task.taskId, executionId: task.executionId,
+      expectedTaskRevision: accepted.entity.revision,
+      provider: 'opencontent', externalId: uploadedMutableFile.fileId,
+      kind: 'content-space.file-reference', name: 'Uploaded mutable output',
+      portableReference: toPortableContentFileReference(uploadedMutableFile), version: '1'
+    }, workerAgent.deviceCredential)
+    expect(portableCreate.status).toBe(200)
+    const portableCreated = await portableCreate.json() as {
+      entity: { resourceRefId: string; openUrl: null; portableReference: unknown }
+    }
+    expect(portableCreated.entity.openUrl).toBeNull()
+    expect(parsePortableContentFileReference(portableCreated.entity.portableReference))
+      .toEqual(uploadedMutableFile)
+
+    const portableGet = await postCommand(baseUrl, {
+      protocolVersion: '1.0', requestId: 'req_ApiPortableGet001', type: 'resource.get',
+      resourceRefId: portableCreated.entity.resourceRefId
+    }, worker.userToken)
+    expect(portableGet.status).toBe(200)
+    const portableFetched = await portableGet.json() as {
+      entity: { openUrl: null; portableReference: unknown }
+    }
+    expect(portableFetched.entity.openUrl).toBeNull()
+    expect(portableFetched.entity.portableReference)
+      .toEqual(toPortableContentFileReference(uploadedMutableFile))
+    expect(parsePortableContentFileReference(portableFetched.entity.portableReference))
+      .toEqual(uploadedMutableFile)
 
     const fetchedProjectRecord = await postCommand(baseUrl, {
       protocolVersion: '1.0', requestId: 'req_ApiProjectRecord01', type: 'project_record.get',

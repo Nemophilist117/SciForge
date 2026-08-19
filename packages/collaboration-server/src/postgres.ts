@@ -1,6 +1,11 @@
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 
+import {
+  deserializePortableResourceReferenceCarrier,
+  serializePortableResourceReferenceCarrier
+} from '@sciforge/collaboration-contracts'
+
 import { CollaborationServiceError } from './errors.js'
 import type {
   InboxRecipient,
@@ -1549,15 +1554,19 @@ class PostgresTransaction extends PostgresReadRepository implements Collaboratio
     await this.sql.query(
       `INSERT INTO sciforge_collaboration.resource_refs
        (resource_ref_id,project_id,task_id,execution_id,task_revision,created_by_user_id,created_by_agent_id,
-        provider,external_id,kind,name,open_url,provider_version,status,status_reason_code,unavailable_at,revoked_at,
-        invalidated_at,revision,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+        provider,external_id,kind,name,open_url,portable_reference,provider_version,status,status_reason_code,
+        unavailable_at,revoked_at,invalidated_at,revision,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [resource.resourceRefId, resource.projectId, resource.taskId ?? null, resource.executionId ?? null,
         resource.taskRevision ?? null,
         resource.createdByUserId, resource.createdByAgentId ?? null, resource.provider, resource.externalId,
-        resource.kind, resource.name, resource.openUrl, resource.version ?? null, resource.status,
-        resource.statusReasonCode ?? null, resource.unavailableAt ?? null, resource.revokedAt ?? null,
-        resource.invalidatedAt ?? null, resource.revision, resource.createdAt, resource.updatedAt]
+        resource.kind, resource.name, resource.openUrl ?? null,
+        resource.portableReference
+          ? serializePortableResourceReferenceCarrier(resource.portableReference)
+          : null,
+        resource.version ?? null, resource.status, resource.statusReasonCode ?? null,
+        resource.unavailableAt ?? null, resource.revokedAt ?? null, resource.invalidatedAt ?? null,
+        resource.revision, resource.createdAt, resource.updatedAt]
     )
   }
 
@@ -1771,6 +1780,7 @@ const RESOURCE_REF_VALIDATION_CONSTRAINTS = new Set([
   'resource_refs_kind_format',
   'resource_refs_name_safe',
   'resource_refs_open_url_safe',
+  'resource_refs_portable_reference_safe',
   'resource_refs_provider_version_safe',
   'resource_refs_status_valid',
   'resource_refs_revision_valid',
@@ -2013,7 +2023,10 @@ function mapResourceRef(row: SqlRow): StoredResourceRef {
     externalId: string(row, 'external_id'),
     kind: string(row, 'kind'),
     name: string(row, 'name'),
-    openUrl: string(row, 'open_url'),
+    ...(row.open_url == null ? {} : { openUrl: string(row, 'open_url') }),
+    ...(row.portable_reference == null
+      ? {}
+      : { portableReference: deserializePortableResourceReferenceCarrier(string(row, 'portable_reference')) }),
     version: optionalString(row, 'provider_version'),
     status: string(row, 'status') as StoredResourceRef['status'],
     ...(row.status_reason_code == null ? {} : { statusReasonCode: string(row, 'status_reason_code') }),

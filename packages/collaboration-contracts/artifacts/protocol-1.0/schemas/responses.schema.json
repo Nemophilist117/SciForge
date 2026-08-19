@@ -30,6 +30,37 @@
           "type": "object"
         }
       ]
+    },
+    "__schema1": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/__schema1"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema1"
+          },
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      ]
     }
   },
   "$id": "https://contracts.sciforge.invalid/collaboration/1.0/responses.schema.json",
@@ -5062,9 +5093,62 @@
                   "type": "string"
                 },
                 "openUrl": {
-                  "maxLength": 2048,
-                  "minLength": 1,
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "maxLength": 2048,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "portableReference": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authority": {
+                          "maxLength": 256,
+                          "minLength": 3,
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,255}$",
+                          "type": "string"
+                        },
+                        "contractVersion": {
+                          "const": 1,
+                          "type": "number"
+                        },
+                        "identity": {
+                          "additionalProperties": {
+                            "$ref": "#/$defs/__schema0"
+                          },
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "kind": {
+                          "enum": [
+                            "content-space.file-reference",
+                            "content-space.container-reference",
+                            "content-space.artifact-reference"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "contractVersion",
+                        "kind",
+                        "authority",
+                        "identity"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "projectId": {
                   "pattern": "^prj_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
@@ -5194,6 +5278,7 @@
                 "kind",
                 "name",
                 "openUrl",
+                "portableReference",
                 "version",
                 "status",
                 "statusReasonCode",
@@ -9596,9 +9681,62 @@
                     "type": "string"
                   },
                   "openUrl": {
-                    "maxLength": 2048,
-                    "minLength": 1,
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "portableReference": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "authority": {
+                            "maxLength": 256,
+                            "minLength": 3,
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,255}$",
+                            "type": "string"
+                          },
+                          "contractVersion": {
+                            "const": 1,
+                            "type": "number"
+                          },
+                          "identity": {
+                            "additionalProperties": {
+                              "$ref": "#/$defs/__schema0"
+                            },
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "type": "object"
+                          },
+                          "kind": {
+                            "enum": [
+                              "content-space.file-reference",
+                              "content-space.container-reference",
+                              "content-space.artifact-reference"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "contractVersion",
+                          "kind",
+                          "authority",
+                          "identity"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "projectId": {
                     "pattern": "^prj_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
@@ -9728,6 +9866,7 @@
                   "kind",
                   "name",
                   "openUrl",
+                  "portableReference",
                   "version",
                   "status",
                   "statusReasonCode",
@@ -12227,7 +12366,7 @@
               "type": "integer"
             },
             "details": {
-              "$ref": "#/$defs/__schema0"
+              "$ref": "#/$defs/__schema1"
             },
             "expectedRevision": {
               "maximum": 9007199254740991,
