@@ -11,12 +11,20 @@
     "displayName": "Collaboration",
     "version": "1.0.0",
     "hostApi": {
-      "minimum": "1.2.0",
+      "minimum": "1.4.0",
       "maximumExclusive": "2.0.0"
     },
     "priority": 72
   },
   "contributionContracts": {
+    "collaboration.bc-service": {
+      "location": "main.internal-service-descriptor",
+      "serviceId": "collaboration.bc-node",
+      "contractVersion": "1.0.0",
+      "allowedConsumerModuleIds": [
+        "sciforge.project-coordinator"
+      ]
+    },
     "collaboration.workbench-right-panel": {
       "location": "workbench.right-panel",
       "title": "Collaboration",
@@ -47,6 +55,11 @@
         {
           "kind": "main.runtime-lifecycle",
           "id": "collaboration.runtime-lifecycle"
+        },
+        {
+          "kind": "main.extension",
+          "id": "collaboration.bc-service",
+          "version": "1.0.0"
         }
       ]
     },

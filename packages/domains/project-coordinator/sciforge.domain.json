@@ -1,0 +1,47 @@
+{
+  "contractVersion": 1,
+  "kind": "trusted-compile-time",
+  "packageName": "@sciforge/domain-project-coordinator",
+  "publisher": {
+    "id": "sciforge",
+    "displayName": "SciForge"
+  },
+  "module": {
+    "id": "sciforge.project-coordinator",
+    "displayName": "Project Coordinator and Worker Runner",
+    "version": "1.0.0",
+    "hostApi": {
+      "minimum": "1.4.0",
+      "maximumExclusive": "2.0.0"
+    },
+    "priority": 73
+  },
+  "contributionContracts": {},
+  "packaging": {
+    "bundled": true,
+    "runtime": {
+      "requiredPaths": [],
+      "dependencies": [
+        "@sciforge/domain-collaboration"
+      ]
+    }
+  },
+  "entrypoints": [
+    {
+      "process": "main",
+      "export": "./main",
+      "contributions": [
+        {
+          "kind": "main.capability-factory",
+          "id": "project-coordinator.capabilities",
+          "priority": 73
+        },
+        {
+          "kind": "main.runtime-lifecycle",
+          "id": "project-coordinator.runtime-lifecycle",
+          "priority": 73
+        }
+      ]
+    }
+  ]
+}

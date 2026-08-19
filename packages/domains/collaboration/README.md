@@ -3,9 +3,11 @@
 SciForge 的统一用户—手机—Agent 协作领域包。
 
 包通过标准 domain manifest 提供独立 main 与 renderer 入口。main 入口拥有 Agent
-设备连接、本地 Session 投影、durable inbox/outbox、每 projection 顺序队列、receipt
-ledger 和 Task adapter；renderer 只通过 Capability Broker 调用公开 capability，不使用
-领域专用 IPC、MCP 或 Host 私有路径。
+设备身份、A 认证传输、本地 Session 投影、durable inbox/outbox、每 projection 顺序队列
+和 receipt ledger，并通过 Host 限定的 `collaboration.bc-node` 内部服务向 B 提供 Principal、
+Cloud adapter 与 inbox 转交。Coordinator 和 Worker Runner 均由 B 的
+`@sciforge/domain-project-coordinator` 负责；C 不保留第二套 Task adapter。renderer 只通过
+Capability Broker 调用公开 capability，不使用领域专用 IPC、MCP 或 Host 私有路径。
 
 本地高频状态写入 `<userData>/domains/collaboration/state.json`，使用 0600 原子替换。
 非敏感服务 URL 与稳定 installation ID 保存到 package-scoped settings；user/device

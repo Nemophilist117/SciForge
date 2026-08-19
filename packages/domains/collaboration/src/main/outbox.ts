@@ -140,16 +140,14 @@ export class DurableCloudOutbox implements ProjectionCloudOutbox {
       try {
         const response = await client.execute(request, { value: secret })
         if (response.type === 'rest.error') throw new Error(response.error.message)
-        if (response.type !== 'rest.receipt') {
-          throw new Error(`Cloud write returned unexpected ${response.type}.`)
-        }
+        assertCanonicalWriteResponse(request, response)
         const deliveredAt = this.now().toISOString()
         await this.options.store.transact((draft) => {
           const entry = requireOutbox(draft.outbox, next.outboxId)
           entry.state = 'delivered'
           entry.updatedAt = deliveredAt
           entry.deliveredAt = deliveredAt
-          if (request.type !== 'projection.message.publish') return
+          if (request.type !== 'projection.message.publish' || response.type !== 'rest.receipt') return
           const receipt = draft.receipts.find((candidate) => (
             candidate.localItemId === request.localItemId &&
             candidate.projectionId === request.projectionId
@@ -182,6 +180,27 @@ export class DurableCloudOutbox implements ProjectionCloudOutbox {
       }
     }
   }
+}
+
+function assertCanonicalWriteResponse(
+  request: RestRequest,
+  response: Awaited<ReturnType<CollaborationCloudClient['execute']>>
+): void {
+  if (response.type === 'rest.error') throw new Error(response.error.message)
+  if (request.type === 'projection.message.publish') {
+    if (
+      response.type === 'rest.receipt' &&
+      response.receipt.type === 'projection.message.receipt'
+    ) return
+  } else if (request.type === 'inbox.ack') {
+    if (
+      response.type === 'rest.receipt' &&
+      response.receipt.type === 'inbox.receipt'
+    ) return
+  } else if (response.type === 'rest.receipt') {
+    return
+  }
+  throw new Error(`Cloud write returned unexpected ${response.type} for ${request.type}.`)
 }
 
 export function createHttpCloudClient(baseUrl: string): CollaborationCloudClient {

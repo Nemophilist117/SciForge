@@ -6,6 +6,7 @@
   "private": false,
   "description": "User, device, Agent, personal Session projection, and Project collaboration domain.",
   "exports": {
+    "./bc-node-port": "./src/main/bc-node-port.ts",
     "./contract": "./src/contract.ts",
     "./definition": "./src/definition.ts",
     "./main": "./src/main.ts",

@@ -1,9 +1,11 @@
 import type { z } from 'zod'
 import type {
   DomainMainHost,
+  DomainMainInternalServiceDescriptor,
   DomainMainRuntimeDisposer,
   DomainMainRuntimeLifecycleContribution
 } from '@sciforge/domain-sdk/host'
+import { defineDomainMainInternalServiceDescriptor } from '@sciforge/domain-sdk/host'
 import type { TrustedDomainProcessEntryInput } from '@sciforge/domain-sdk/main'
 import {
   COLLABORATION_CAPABILITY_IDS,
@@ -46,6 +48,8 @@ import {
 import {
   COLLABORATION_CAPABILITY_FACTORY_CONTRIBUTION,
   COLLABORATION_DOMAIN_MODULE_ID,
+  COLLABORATION_INTERNAL_SERVICE_DESCRIPTOR_CONTRACT,
+  COLLABORATION_INTERNAL_SERVICE_DESCRIPTOR_CONTRIBUTION,
   COLLABORATION_RUNTIME_LIFECYCLE_CONTRIBUTION,
   domainPackageDefinition
 } from './definition.js'
@@ -54,6 +58,19 @@ import {
   collaborationStatePath,
   type CollaborationRuntimeOptions
 } from './main/runtime.js'
+import {
+  COLLABORATION_BC_NODE_CONTRACT_VERSION,
+  COLLABORATION_BC_NODE_SERVICE_ID,
+  CollaborationBCNodePortImpl
+} from './main/bc-node-port.js'
+
+export type {
+  BCInboxHandler,
+  BCInboxOutcome,
+  CollaborationBCCloudRequest,
+  CollaborationBCNodePort,
+  CollaborationNodePrincipal
+} from './main/bc-node-port.js'
 
 export {
   ProjectionCoordinator,
@@ -99,6 +116,7 @@ export type CollaborationCapabilityFactory<CapabilityDefinition = unknown> = Rea
 
 type CollaborationMainContribution<CapabilityDefinition = unknown> =
   | CollaborationCapabilityFactory<CapabilityDefinition>
+  | DomainMainInternalServiceDescriptor
   | DomainMainRuntimeLifecycleContribution
 
 type CollaborationMainHost = DomainMainHost & Readonly<{
@@ -113,17 +131,46 @@ type OwnedRuntime = Readonly<{
 export function createDomainMainEntry<CapabilityDefinition = unknown>(
   host: CollaborationMainHost
 ): TrustedDomainProcessEntryInput<CollaborationMainContribution<CapabilityDefinition>> {
-  if (!host.packageSettings || !host.packageSecrets) {
-    throw new Error('Collaboration requires package-scoped settings and secret storage.')
+  if (!host.packageSettings || !host.packageSecrets || !host.internalServices) {
+    throw new Error('Collaboration requires package storage and Host-mediated internal services.')
   }
   const createRuntime = host.createCollaborationRuntime ?? ((options) => new CollaborationRuntime(options))
   let owned: OwnedRuntime | null = null
   let activation: Promise<OwnedRuntime> | null = null
+  let activatingRuntime: CollaborationRuntime | null = null
+  let bcEnabled = false
+  let wakeRequested = false
 
   const requireRuntime = (): CollaborationRuntime => {
-    if (!owned || owned.disposed) throw new Error('Collaboration runtime is not active.')
-    return owned.runtime
+    if (owned && !owned.disposed) return owned.runtime
+    if (activatingRuntime) return activatingRuntime
+    throw new Error('Collaboration runtime is not active.')
   }
+  const bcPort = new CollaborationBCNodePortImpl({
+    current: () => requireRuntime().collaborationIdentity(),
+    execute: (request) => requireRuntime().executeARequest(request),
+    wake: () => {
+      if (owned && !owned.disposed) owned.runtime.wakeBC()
+      else wakeRequested = true
+    },
+    registrationChanged: (enabled) => {
+      bcEnabled = enabled
+      const current = owned && !owned.disposed ? owned.runtime : activatingRuntime
+      if (current) void current.setBCCapabilities(enabled).catch(() => undefined)
+    }
+  })
+  const internalServiceDescriptor = defineDomainMainInternalServiceDescriptor({
+    location: 'main.internal-service-descriptor',
+    serviceId: COLLABORATION_BC_NODE_SERVICE_ID,
+    contractVersion: COLLABORATION_BC_NODE_CONTRACT_VERSION,
+    allowedConsumerModuleIds: ['sciforge.project-coordinator']
+  })
+  host.internalServices.register({
+    serviceId: COLLABORATION_BC_NODE_SERVICE_ID,
+    contractVersion: COLLABORATION_BC_NODE_CONTRACT_VERSION,
+    allowedConsumerModuleIds: ['sciforge.project-coordinator'],
+    service: bcPort
+  })
   const disposeOwned = async (record: OwnedRuntime | null): Promise<void> => {
     if (!record || record.disposed) return
     record.disposed = true
@@ -135,20 +182,31 @@ export function createDomainMainEntry<CapabilityDefinition = unknown>(
     activate: async (context) => {
       if (owned || activation) throw new Error('Collaboration runtime lifecycle is already active.')
       const pending = (async (): Promise<OwnedRuntime> => {
+        const initialBCEnabled = bcEnabled
         const runtime = createRuntime({
           statePath: collaborationStatePath(context.userDataDir),
           packageSettings: host.packageSettings!,
           packageSecrets: host.packageSecrets!,
+          bcPort,
+          bcCapabilitiesEnabled: initialBCEnabled,
           sanitizeText: host.textSanitizer?.sanitizeText
         })
+        activatingRuntime = runtime
         try {
           const deactivate = await runtime.activate(context)
           const record: OwnedRuntime = { runtime, deactivate, disposed: false }
           owned = record
+          if (bcEnabled !== initialBCEnabled) await runtime.setBCCapabilities(bcEnabled)
+          if (wakeRequested) {
+            wakeRequested = false
+            runtime.wakeBC()
+          }
           return record
         } catch (error) {
           await runtime.dispose().catch(() => undefined)
           throw error
+        } finally {
+          if (activatingRuntime === runtime) activatingRuntime = null
         }
       })()
       activation = pending
@@ -183,6 +241,11 @@ export function createDomainMainEntry<CapabilityDefinition = unknown>(
           if (pending) await disposeOwned(await pending)
           else await disposeOwned(owned)
         }
+      },
+      {
+        ...COLLABORATION_INTERNAL_SERVICE_DESCRIPTOR_CONTRIBUTION,
+        contract: COLLABORATION_INTERNAL_SERVICE_DESCRIPTOR_CONTRACT,
+        value: internalServiceDescriptor
       }
     ]
   }

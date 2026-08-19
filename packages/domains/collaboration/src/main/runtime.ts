@@ -5,6 +5,7 @@ import {
   type AgentInboxMessage,
   type Project,
   type RemoteSessionProjection,
+  type RestRequest,
   type RestResponse,
   type Task
 } from '@sciforge/collaboration-contracts'
@@ -51,7 +52,10 @@ import {
   FileCollaborationStateBackend,
   type CollaborationStateBackend
 } from './store.js'
-import { CollaborationTaskAdapter } from './task-adapter.js'
+import type {
+  CollaborationBCCloudRequest,
+  CollaborationBCNodePortImpl
+} from './bc-node-port.js'
 
 export type CollaborationRuntimeOptions = Readonly<{
   statePath: string
@@ -61,6 +65,8 @@ export type CollaborationRuntimeOptions = Readonly<{
   createCloudClient?: (baseUrl: string) => CollaborationCloudClient
   sanitizeText?: (value: string) => string
   now?: () => Date
+  bcPort?: Pick<CollaborationBCNodePortImpl, 'current' | 'execute' | 'wake' | 'handle'>
+  bcCapabilitiesEnabled?: boolean
 }>
 
 export class CollaborationRuntime {
@@ -69,16 +75,20 @@ export class CollaborationRuntime {
   private connection: CollaborationConnection | null = null
   private outbox: DurableCloudOutbox | null = null
   private projections: ProjectionCoordinator | null = null
-  private tasks: CollaborationTaskAdapter | null = null
   private context: DomainMainRuntimeLifecycleContext | null = null
   private active = false
   private localAgentIdentity: string | undefined
+  private bcAbortController: AbortController | null = null
+  private readonly bcPort: Pick<CollaborationBCNodePortImpl, 'handle'>
 
   constructor(private readonly options: CollaborationRuntimeOptions) {
     this.store = new CollaborationLocalStore(
       options.stateBackend ?? new FileCollaborationStateBackend(options.statePath)
     )
     this.settings = new CollaborationSettingsService(options.packageSettings)
+    this.bcPort = options.bcPort ?? {
+      handle: async () => { throw new Error('B runtime is unavailable.') }
+    }
   }
 
   async activate(context: DomainMainRuntimeLifecycleContext): Promise<DomainMainRuntimeDisposer> {
@@ -92,11 +102,10 @@ export class CollaborationRuntime {
     await this.store.open()
     this.context = context
     this.active = true
+    this.bcAbortController = new AbortController()
     const configured = await this.settings.read()
     if (configured.settings) {
-      this.localAgentIdentity = this.store.snapshot().agents.find((agent) => (
-        agent.installationId === configured.settings!.installationId
-      ))?.agentId
+      this.localAgentIdentity = configured.settings.agentId
     }
 
     let connection!: CollaborationConnection
@@ -116,19 +125,10 @@ export class CollaborationRuntime {
       sanitizeText: this.options.sanitizeText,
       now: this.options.now
     })
-    let tasks!: CollaborationTaskAdapter
     const inboxHandler: CollaborationInboxHandler = {
       handle: async (message) => {
         if (message.payload.type === 'personal.message.received') {
           await projections.acceptPersonalInbox(message)
-          return
-        }
-        if (
-          message.payload.type === 'task.offered' ||
-          message.payload.type === 'task.cancelled' ||
-          message.payload.type === 'task.updated'
-        ) {
-          await tasks.handleInbox(message)
           return
         }
         if (message.payload.type === 'agent.revoked') {
@@ -143,6 +143,10 @@ export class CollaborationRuntime {
           )
           return
         }
+        await this.bcPort.handle(
+          message,
+          this.bcAbortController?.signal ?? AbortSignal.abort()
+        )
         await this.refreshCollaborationFact(message)
       }
     }
@@ -156,21 +160,12 @@ export class CollaborationRuntime {
       )),
       inboxHandler,
       sanitizeText: this.options.sanitizeText,
-      now: this.options.now
-    })
-    tasks = new CollaborationTaskAdapter({
-      store: this.store,
-      connection,
-      outbox,
-      agentExecution: context.agentExecution,
-      localAgentId: () => this.localAgentIdentity,
-      sanitizeText: this.options.sanitizeText,
-      now: this.options.now
+      now: this.options.now,
+      bcCapabilitiesEnabled: this.options.bcCapabilitiesEnabled
     })
     this.connection = connection
     this.outbox = outbox
     this.projections = projections
-    this.tasks = tasks
 
     const disposeTurnEvents = context.turnEvents.subscribe(async (event) => {
       if (event.kind !== 'after-turn' || !('turnId' in event) || !event.turnId) return
@@ -196,10 +191,6 @@ export class CollaborationRuntime {
     await this.reconcileTranscriptSnapshots()
     await projections.recover()
     await connection.activate()
-    // Task reconciliation consults canonical cloud state before executing. Run
-    // it only after the connection has initialized; an offline activation keeps
-    // the runs durable in reconciling state until an explicit recovery/restart.
-    await tasks.recover()
 
     return async () => {
       await disposeTurnEvents()
@@ -210,18 +201,17 @@ export class CollaborationRuntime {
   async dispose(): Promise<void> {
     if (!this.active) return
     this.active = false
+    this.bcAbortController?.abort()
+    this.bcAbortController = null
     this.projections?.stop()
-    this.tasks?.stop()
     await this.connection?.dispose()
     await Promise.allSettled([
       this.projections?.waitForIdle() ?? Promise.resolve(),
-      this.tasks?.waitForIdle() ?? Promise.resolve(),
       this.outbox?.waitForIdle() ?? Promise.resolve()
     ])
     this.connection = null
     this.outbox = null
     this.projections = null
-    this.tasks = null
     this.context = null
   }
 
@@ -282,7 +272,7 @@ export class CollaborationRuntime {
     const deviceCredentialAvailable = await this.options.packageSecrets.has('device-credential')
     const localAgent = configured.settings
       ? state.agents.find((agent) => (
-          agent.installationId === configured.settings!.installationId
+          agent.agentId === configured.settings!.agentId
           && agent.lifecycleStatus === 'active'
         ))
       : undefined
@@ -345,6 +335,36 @@ export class CollaborationRuntime {
     return (await this.status()).participant!.agents.find((candidate) => (
       candidate.agentId === agent.agentId
     ))!
+  }
+
+  async collaborationIdentity(): Promise<Readonly<{
+    userId: string
+    agentId: string
+    connected: boolean
+  }>> {
+    const connection = this.requireConnection()
+    const agentId = await connection.localAgentId()
+    const agent = this.store.snapshot().agents.find((candidate) => (
+      candidate.agentId === agentId && candidate.lifecycleStatus === 'active'
+    ))
+    if (!agent) throw new Error('This installation has no active collaboration Agent identity.')
+    return {
+      userId: agent.ownerUserId,
+      agentId: agent.agentId,
+      connected: connection.state().state === 'connected'
+    }
+  }
+
+  executeARequest(request: CollaborationBCCloudRequest): Promise<RestResponse> {
+    return this.requireConnection().executeAsDevice(restRequestSchema.parse(request) as RestRequest)
+  }
+
+  setBCCapabilities(enabled: boolean): Promise<void> {
+    return this.requireConnection().setBCCapabilities(enabled)
+  }
+
+  wakeBC(): void {
+    this.requireConnection().wake()
   }
 
   async selectPrimaryAgent(input: CollaborationPrimaryAgentSelectInput) {
@@ -494,7 +514,7 @@ export class CollaborationRuntime {
       await this.requireProjections().retry(input.id!)
       return
     }
-    if (input.scope === 'task') await this.requireTasks().recover()
+    if (input.scope === 'task') this.requireConnection().wake()
   }
 
   listTasks(input: CollaborationTaskListInput): readonly CollaborationTaskView[] {
@@ -627,10 +647,6 @@ export class CollaborationRuntime {
     return this.projections
   }
 
-  private requireTasks(): CollaborationTaskAdapter {
-    if (!this.tasks || !this.active) throw new Error('Collaboration runtime is not active.')
-    return this.tasks
-  }
 }
 
 export function collaborationStatePath(userDataDir: string): string {
