@@ -177,8 +177,7 @@ function requireConnectionPrincipal(context: OpenContentCapabilityContext): Prin
   if (
     context.caller.audience !== 'ui' ||
     principal === undefined ||
-    (principal.assurance !== 'local-selection' &&
-      principal.assurance !== 'cloud-authenticated')
+    principal.assurance !== 'cloud-authenticated'
   ) {
     throw new Error('A current UI Principal is required for OpenContent connection management.')
   }

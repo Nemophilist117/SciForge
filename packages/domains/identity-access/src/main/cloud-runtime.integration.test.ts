@@ -198,7 +198,7 @@ describe('CloudIdentityRuntime HTTP integration', () => {
     }))
     const openTarget = vi.fn(async () => undefined)
     const externalNavigation = { issueTarget, openTarget } as never
-    const principal = new IdentityService(userDataDir, installationSeed)
+    const principal = new IdentityService(userDataDir)
     const principalSnapshots: PrincipalContextSnapshot[] = []
     const authorityInvalidations: string[] = []
     const disposePrincipal = principal.subscribe((snapshot) => principalSnapshots.push(snapshot))
@@ -228,6 +228,12 @@ describe('CloudIdentityRuntime HTTP integration', () => {
         deviceId: 'dev_CloudDevice0001'
       })
       expect(principal.current()?.deviceId).not.toBe(installationId)
+      expect(runtime.authenticatedCloudTransportStatus()).toMatchObject({
+        state: 'ready',
+        userId: 'usr_CloudUser000001',
+        deviceId: 'dev_CloudDevice0001',
+        deviceEntityRevision: 1
+      })
       const principalBeforeRefresh = principal.snapshot()
       const principalPublicationCount = principalSnapshots.length
       const invalidationsBeforeRefresh = authorityInvalidations.length
@@ -311,10 +317,10 @@ describe('CloudIdentityRuntime HTTP integration', () => {
         }
       })).rejects.toMatchObject({ code: 'device_required' })
       expect(commandPayloads).toHaveLength(1)
-      expect(principal.current()?.assurance).toBe('local-selection')
+      expect(principal.current()).toBeUndefined()
       principalVersion = expectLatestPrincipal(
         principalSnapshots,
-        'local-selection',
+        'signed-out',
         principalVersion
       )
 
@@ -331,10 +337,10 @@ describe('CloudIdentityRuntime HTTP integration', () => {
       await expect(runtime.refreshDevices()).resolves.toMatchObject({
         device: { state: 'not-enrolled' }
       })
-      expect(principal.current()?.assurance).toBe('local-selection')
+      expect(principal.current()).toBeUndefined()
       principalVersion = expectLatestPrincipal(
         principalSnapshots,
-        'local-selection',
+        'signed-out',
         principalVersion
       )
 
@@ -351,10 +357,10 @@ describe('CloudIdentityRuntime HTTP integration', () => {
       await expect(runtime.refreshDevices()).resolves.toMatchObject({
         device: { state: 'revoked' }
       })
-      expect(principal.current()?.assurance).toBe('local-selection')
+      expect(principal.current()).toBeUndefined()
       principalVersion = expectLatestPrincipal(
         principalSnapshots,
-        'local-selection',
+        'signed-out',
         principalVersion
       )
 
@@ -373,10 +379,10 @@ describe('CloudIdentityRuntime HTTP integration', () => {
         device: { state: 'error' },
         error: { source: 'device' }
       })
-      expect(principal.current()?.assurance).toBe('local-selection')
+      expect(principal.current()).toBeUndefined()
       principalVersion = expectLatestPrincipal(
         principalSnapshots,
-        'local-selection',
+        'signed-out',
         principalVersion
       )
 
@@ -395,8 +401,8 @@ describe('CloudIdentityRuntime HTTP integration', () => {
         device: { state: 'error' },
         error: { source: 'device' }
       })
-      expect(principal.current()?.assurance).toBe('local-selection')
-      expectLatestPrincipal(principalSnapshots, 'local-selection', principalVersion)
+      expect(principal.current()).toBeUndefined()
+      expectLatestPrincipal(principalSnapshots, 'signed-out', principalVersion)
       deviceNetworkFails = false
       deviceMode = 'active'
       await runtime.refreshDevices()
@@ -409,7 +415,7 @@ describe('CloudIdentityRuntime HTTP integration', () => {
       disposePrincipal()
       principal.close()
 
-      const restartedPrincipal = new IdentityService(userDataDir, installationSeed)
+      const restartedPrincipal = new IdentityService(userDataDir)
       const restartedAuthorityInvalidations: string[] = []
       const restartedRuntime = await CloudIdentityRuntime.create({
         userDataDir,
@@ -442,7 +448,7 @@ describe('CloudIdentityRuntime HTTP integration', () => {
         expect(restartedAuthorityInvalidations).toContain('OIDC User authority changed.')
         expect(revocationAccepted).toBe(true)
         expect(privateVault.value({ kind: 'oidc-session' })).toBeNull()
-        expect(restartedPrincipal.current()?.assurance).toBe('local-selection')
+        expect(restartedPrincipal.current()).toBeUndefined()
         expect(issueTarget.mock.calls.some(([input]) => (
           input.url.startsWith(`${issuer}/protocol/openid-connect/logout?`) &&
           input.url.includes('client_id=sciforge-desktop')
@@ -457,7 +463,7 @@ describe('CloudIdentityRuntime HTTP integration', () => {
           refreshToken: revokedRefreshToken
         }))
 
-        const rejectedPrincipal = new IdentityService(userDataDir, installationSeed)
+        const rejectedPrincipal = new IdentityService(userDataDir)
         const rejectedRuntime = await CloudIdentityRuntime.create({
           userDataDir,
           appRoot: userDataDir,
@@ -478,7 +484,7 @@ describe('CloudIdentityRuntime HTTP integration', () => {
           })
           expect(revokedTokenRejected).toBe(true)
           expect(privateVault.value({ kind: 'oidc-session' })).toBeNull()
-          expect(rejectedPrincipal.current()?.assurance).toBe('local-selection')
+          expect(rejectedPrincipal.current()).toBeUndefined()
         } finally {
           rejectedRuntime.close()
           rejectedPrincipal.close()
@@ -505,12 +511,13 @@ describe('CloudIdentityRuntime HTTP integration', () => {
 
 function expectLatestPrincipal(
   snapshots: readonly PrincipalContextSnapshot[],
-  assurance: 'local-selection' | 'cloud-authenticated',
+  assurance: 'signed-out' | 'cloud-authenticated',
   previousVersion: number
 ): number {
   const latest = snapshots.at(-1)
   expect(latest).toBeDefined()
-  expect(latest?.principal?.assurance).toBe(assurance)
+  if (assurance === 'signed-out') expect(latest?.principal).toBeNull()
+  else expect(latest?.principal?.assurance).toBe(assurance)
   expect(latest?.identityVersion).toBeGreaterThan(previousVersion)
   return latest!.identityVersion
 }

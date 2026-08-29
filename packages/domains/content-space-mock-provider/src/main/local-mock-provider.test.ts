@@ -18,9 +18,9 @@ import {
 const PROVIDER_INSTANCE_REF = 'local-content-space-instance'
 const NOW = new Date('2026-08-16T08:00:00.000Z')
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'mock-provider-test-device',
   identityVersion: 1
 })

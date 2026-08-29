@@ -1398,9 +1398,9 @@ describe('CapabilityAgentToolSurface', () => {
       assertPrincipalLease: () => ({
         identityVersion: principalVersion,
         principal: {
-          authority: 'sciforge.identity-access',
+          authority: 'sciforge-cloud',
           subject: principalSubject,
-          assurance: 'local-selection' as const,
+          assurance: 'cloud-authenticated' as const,
           deviceId: 'installation-1',
           identityVersion: principalVersion
         }

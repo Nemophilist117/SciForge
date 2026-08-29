@@ -84,10 +84,13 @@ describe('ContentSpacePanel', () => {
   it('discovers Provider Instances without silently selecting a default Provider', async () => {
     const describeCapabilities = vi.fn(panelClient().describeCapabilities)
     const listContainers = vi.fn(panelClient().listContainers)
+    const readAccessState = vi.fn(async () => ({ status: 'ready' as const }))
     const mounted = await mountPanel(panelClient({
       describeCapabilities,
       listContainers
-    }))
+    }), {
+      enrollmentViews: [enrollmentView('mock-one', readAccessState)]
+    })
 
     const select = providerSelect(mounted.container)
     expect([...select.options].map(({ value }) => value)).toEqual([
@@ -96,6 +99,8 @@ describe('ContentSpacePanel', () => {
       providerTwo
     ])
     expect(select.value).toBe('')
+    expect(readAccessState).not.toHaveBeenCalled()
+    expect(mounted.container.querySelector('[data-fixture-enrollment]')).toBeNull()
     expect(describeCapabilities).not.toHaveBeenCalled()
     expect(listContainers).not.toHaveBeenCalled()
     expect(mounted.container.textContent).toContain('Select a Provider Instance.')
@@ -148,6 +153,33 @@ describe('ContentSpacePanel', () => {
     await settleReact()
 
     expect(events).toEqual(['access', 'describe', 'list'])
+  })
+
+  it('syncs the selected Provider identity only after an explicit confirmed action', async () => {
+    const syncProviderPrincipal = vi.fn(async (providerInstanceRef) => ok({
+      providerInstanceRef,
+      status: 'synchronized' as const
+    })) satisfies ContentSpaceCapabilityClient['syncProviderPrincipal']
+    const readAccessState = vi.fn(async () => ({ status: 'ready' as const }))
+    const mounted = await mountPanel(panelClient({ syncProviderPrincipal }), {
+      enrollmentViews: [enrollmentView('mock-one', readAccessState)]
+    })
+
+    expect(buttonByTextOrNull(mounted.container, 'Sync')).toBeNull()
+    expect(syncProviderPrincipal).not.toHaveBeenCalled()
+
+    await selectProvider(mounted.container, providerOne)
+    const syncButton = buttonByText(mounted.container, 'Sync')
+    expect(syncButton.disabled).toBe(false)
+    expect(syncProviderPrincipal).not.toHaveBeenCalled()
+
+    await click(syncButton)
+
+    expect(syncProviderPrincipal).toHaveBeenCalledWith(providerOne, {
+      approval: { mode: 'confirmation' },
+      signal: expect.any(AbortSignal)
+    })
+    expect(mounted.container.textContent).toContain('Provider identity synchronized.')
   })
 
   it('clears Provider content and aborts stale reads when enrollment access changes', async () => {
@@ -1060,6 +1092,10 @@ function panelClient(
         { providerInstanceRef: providerOne, providerKind: 'mock-one', label: 'Mock One' },
         { providerInstanceRef: providerTwo, providerKind: 'mock-two', label: 'Mock Two' }
       ]
+    }),
+    syncProviderPrincipal: async (providerInstanceRef) => ok({
+      providerInstanceRef,
+      status: 'synchronized' as const
     }),
     describeCapabilities: async () => ok({
       items: readyCapabilities('list-containers', 'list-entries')

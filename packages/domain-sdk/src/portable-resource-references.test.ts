@@ -252,10 +252,10 @@ describe('portable resource composition contracts', () => {
       assertions += 1
     }
     const principal = {
-      authority: 'local.identity',
-      subject: 'alice',
-      assurance: 'local-selection' as const,
-      deviceId: 'installation-alpha',
+      authority: 'sciforge-cloud',
+      subject: 'usr_CloudUser000001',
+      assurance: 'cloud-authenticated' as const,
+      deviceId: 'dev_CloudDevice0001',
       identityVersion: 1
     }
     const resolution = await resolver.resolve({

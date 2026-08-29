@@ -23,7 +23,6 @@ const DEVICE_STATUS_MESSAGE = Object.freeze({
 
 export function CloudIdentitySection(props: Readonly<{
   projection: IdentityRendererProjection
-  localAccountSelected: boolean
 }>): React.JSX.Element {
   const { t } = useTranslation('identity')
   const snapshot = useSyncExternalStore(
@@ -40,7 +39,7 @@ export function CloudIdentitySection(props: Readonly<{
   }
 
   return (
-    <section className="mt-5 border-t border-border pt-5" aria-labelledby="cloud-identity-title">
+    <section className="mt-5" aria-labelledby="cloud-identity-title">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 id="cloud-identity-title" className="text-sm font-semibold">
@@ -64,16 +63,10 @@ export function CloudIdentitySection(props: Readonly<{
             <UserRound className="h-4 w-4" strokeWidth={1.8} />
             <span>{t('cloudSignedOut')}</span>
           </div>
-          {!props.localAccountSelected ? (
-            <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-300">
-              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.8} />
-              <span>{t('cloudLocalAccountRequired')}</span>
-            </p>
-          ) : null}
           <button
             type="button"
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={busy || !props.localAccountSelected}
+            disabled={busy}
             onClick={() => run(() => props.projection.loginCloud())}
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}

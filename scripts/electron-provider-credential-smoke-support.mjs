@@ -18,13 +18,12 @@ export async function runProviderCredentialElectronSmoke({
   const userDataDirectory = resolve(temporaryDirectory, 'user-data')
   const results = []
   try {
-    for (const [index, phase] of PHASES.entries()) {
+    for (const phase of PHASES) {
       results.push(await runPhase({
         executablePath,
         applicationPath,
         userDataDirectory,
         phase,
-        createIdentity: index === 0,
         timeoutMs
       }))
     }
@@ -78,7 +77,6 @@ async function runPhase({
   applicationPath,
   userDataDirectory,
   phase,
-  createIdentity,
   timeoutMs
 }) {
   const { _electron: electron } = await import('playwright-core')
@@ -105,17 +103,6 @@ async function runPhase({
       undefined,
       { timeout: timeoutMs }
     )
-    if (createIdentity) {
-      await window.evaluate(async () => {
-        await globalThis.sciforge.capabilities.invoke({
-          request: {
-            actionId: 'identity.local.create-account',
-            invocationId: 'provider-credential-acceptance-create-account',
-            input: { username: 'provider_credential_acceptance' }
-          }
-        })
-      })
-    }
     const result = await electronApp.evaluate(async (_electron, acceptancePhase) => {
       const run = globalThis.__SCIFORGE_PROVIDER_CREDENTIAL_ACCEPTANCE__
       if (typeof run !== 'function') {

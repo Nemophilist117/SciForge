@@ -8,12 +8,10 @@ import {
   CLOUD_IDENTITY_SMOKE_CAPABILITY_IDS,
   COLLABORATION_SMOKE_CAPABILITY_IDS,
   CONTENT_SPACE_SMOKE_CAPABILITY_IDS,
-  IDENTITY_SMOKE_CAPABILITY_IDS,
   PROJECT_COORDINATOR_SMOKE_CAPABILITY_IDS,
   REQUIRED_CAPABILITY_IDS,
   cleanupElectronSmoke,
   createElectronSmokeTemporaryDirectory,
-  createIdentitySmokeInvocationId,
   createSourceSmokeConfiguration,
   electronSmokeRemoveOptions,
   locatePackagedExecutable,
@@ -31,8 +29,8 @@ test('packaged credential smoke selects the mock Keychain before Electron startu
     userDataDirectory: '/tmp/sciforge-provider-profile',
     platform: 'darwin'
   }), [
-    '/tmp/SciForge.app',
-    '--user-data-dir=/tmp/sciforge-provider-profile',
+    resolve('/tmp/SciForge.app'),
+    `--user-data-dir=${resolve('/tmp/sciforge-provider-profile')}`,
     '--use-mock-keychain',
     '--hidden'
   ])
@@ -127,16 +125,6 @@ test('smoke exposes cleanup failure when no primary failure exists', async () =>
 })
 
 test('domain smoke requires every Stage 2 collaboration capability exactly once', () => {
-  assert.deepEqual(IDENTITY_SMOKE_CAPABILITY_IDS, [
-    'identity.local.inspect',
-    'identity.local.list-accounts',
-    'identity.local.create-account',
-    'identity.local.select-account',
-    'identity.local.rename-account',
-    'identity.local.exit-account',
-    'identity.local.dismiss-first-prompt',
-    'identity.local.backup-and-reset'
-  ])
   assert.deepEqual(CONTENT_SPACE_SMOKE_CAPABILITY_IDS, [
     'content-space.list-provider-instances',
     'content-space.describe-capabilities',
@@ -201,7 +189,6 @@ test('domain smoke requires every Stage 2 collaboration capability exactly once'
   ])
   assert.equal(new Set(REQUIRED_CAPABILITY_IDS).size, REQUIRED_CAPABILITY_IDS.length)
   for (const capabilityId of [
-    ...IDENTITY_SMOKE_CAPABILITY_IDS,
     ...CLOUD_IDENTITY_SMOKE_CAPABILITY_IDS,
     ...CONTENT_SPACE_SMOKE_CAPABILITY_IDS,
     ...COLLABORATION_SMOKE_CAPABILITY_IDS,
@@ -209,16 +196,6 @@ test('domain smoke requires every Stage 2 collaboration capability exactly once'
   ]) {
     assert.equal(REQUIRED_CAPABILITY_IDS.filter((candidate) => candidate === capabilityId).length, 1)
   }
-})
-
-test('Identity smoke account creation receives a fresh bounded invocation identity', () => {
-  const first = createIdentitySmokeInvocationId(() => '00000000-0000-4000-8000-000000000001')
-  const second = createIdentitySmokeInvocationId(() => '00000000-0000-4000-8000-000000000002')
-
-  assert.equal(first, 'electron-smoke-identity-create-00000000-0000-4000-8000-000000000001')
-  assert.equal(second, 'electron-smoke-identity-create-00000000-0000-4000-8000-000000000002')
-  assert.notEqual(first, second)
-  assert.match(first, /^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/u)
 })
 
 test('smoke CLI requires one strict Cloud/OIDC deployment pair', () => {
@@ -244,15 +221,9 @@ test('smoke CLI requires one strict Cloud/OIDC deployment pair', () => {
   )
 })
 
-test('smoke result requires the selected Identity and a composed Content Space Provider', () => {
+test('smoke result requires signed-out Cloud Identity and a composed Content Space Provider', () => {
   const valid = validSmokeResult()
   assert.doesNotThrow(() => validateSmokeResult(valid, { expectedRendererUrl: valid.url }))
-  assert.throws(
-    () => validateSmokeResult({ ...valid, identityAccountUsername: 'someone_else' }, {
-      expectedRendererUrl: valid.url
-    }),
-    /Identity account/u
-  )
   assert.throws(
     () => validateSmokeResult({ ...valid, contentSpaceProviderInstanceCount: 0 }, {
       expectedRendererUrl: valid.url
@@ -322,8 +293,6 @@ function validSmokeResult() {
     evidenceDagActionId: 'evidence-dag.view',
     scientificPlottingActionId: 'scientific-plotting.status',
     visualReviewActionId: 'visual-review.open',
-    identityActionId: 'identity.local.create-account',
-    identityAccountUsername: 'electron_smoke',
     cloudIdentityActionId: 'identity.cloud.inspect',
     cloudIdentityState: 'signed-out',
     cloudDeviceState: 'signed-out',

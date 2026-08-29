@@ -7,10 +7,10 @@ This directory preserves architectural decisions together with their lifecycle. 
 | ADR | Status | Current reading |
 | --- | --- | --- |
 | 0001–0013, 0016 | accepted | Migrated from the original design workspace; retained as current boundary decisions, with implementation readiness governed by active OpenSpec changes. |
-| 0014 | accepted, amended by 0023 | Local Account selection remains non-authenticating; the OIDC Cloud path is separate and never silently promotes a local identity. |
-| 0015 | accepted, amended by 0026 and 0023 | Main process still asserts the Principal; current assurances include local selection and the strictly verified OIDC plus ACTIVE Device path. |
+| 0014 | superseded by 0040 | Historical Local Account decision; there is no current installation-local Human Principal. |
+| 0015 | accepted, amended by 0040 | Main process still asserts the Principal; the only current assurance is the strictly verified OIDC plus ACTIVE Device path. |
 | 0017 | superseded by 0025 | Keep one Connector, but Content Space precedes every Document port/provider milestone. |
-| 0018–0019 | accepted | Portable references remain non-authorizing; Local Accounts remain attribution rather than local data tenants. |
+| 0018–0019 | accepted, amended by 0040 | Portable references remain non-authorizing; their historical Local Account assumptions no longer apply. |
 | 0020 | superseded | Replaced by `unify-user-device-collaboration` and its implemented collaboration contracts. |
 | 0021 | superseded by 0031 | Historical Keycloak baseline; the final OIDC-only collaboration boundary is ADR-0031. |
 | 0022 | accepted | Exact provider-identity challenge verification binds only a communication endpoint and never creates a User. |
@@ -31,10 +31,11 @@ This directory preserves architectural decisions together with their lifecycle. 
 | 0037 | accepted | Content Space authorizes PoC operations from the current Principal, Broker authority and live Provider binding; static verification profiles are removed, and optional Agent skills never gate Provider use. |
 | 0038 | accepted | Identity automatically ensures one Device-named Agent for the exact ACTIVE Desktop Device; renderer registration and primary-Agent selection do not exist. |
 | 0039 | accepted | Coordinators select a Worker User; Cloud broadcasts one User-level Offer, and the first eligible Device Agent atomically claims it to create the exact Task Execution. |
+| 0040 | accepted | Keycloak-backed Cloud Principal on an ACTIVE Device is the sole Human Principal; signed-out state is `null`, not a local fallback. |
 
 ## Current authority order
 
-The canonical full-collaboration target is `CONTEXT-MAP.md`, the context glossaries, ADR-0031 through ADR-0039, and `openspec/changes/add-full-multi-user-collaboration-loop/`. `docs/SciForge_New_Cloudcolab.md`, the same-named root document, meeting summaries and donor-branch reports are historical or supporting evidence only; they cannot override the current OpenSpec or delivery gates.
+The canonical full-collaboration target is `CONTEXT-MAP.md`, the context glossaries, ADR-0031 through ADR-0040, and `openspec/changes/add-full-multi-user-collaboration-loop/`. `docs/SciForge_New_Cloudcolab.md`, the same-named root document, meeting summaries and donor-branch reports are historical or supporting evidence only; they cannot override the current OpenSpec or delivery gates.
 
 When documents disagree, use this order:
 

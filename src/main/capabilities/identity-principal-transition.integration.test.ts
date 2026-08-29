@@ -1,16 +1,12 @@
 import {
-  mkdirSync,
   mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync
+  rmSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   IDENTITY_CAPABILITY_IDS,
-  IDENTITY_RESET_CONFIRMATION,
   type CloudIdentitySnapshot
 } from '@sciforge/domain-identity-access/contract'
 import {
@@ -56,36 +52,12 @@ afterEach(() => {
 })
 
 describe('Identity Principal transition Host integration', () => {
-  it('creates the first Local Account through application composition and public IPC', async () => {
+  it('starts application composition signed out without a local Principal bootstrap', () => {
     const fixture = identityApplicationIpcFixture(temporaryRoot('sciforge-identity-app-ipc-'))
 
-    const initial = await fixture.invoke(IDENTITY_CAPABILITY_IDS.listAccounts, {})
-    expect(initial.output).toMatchObject({
-      state: { status: 'available', accountCount: 0, currentAccount: null },
-      accounts: []
-    })
-
-    const created = await fixture.invoke(
-      IDENTITY_CAPABILITY_IDS.createAccount,
-      { username: 'Alice' },
-      'create-first-account'
-    )
-
-    expect(created.output).toMatchObject({
-      status: 'available',
-      accountCount: 1,
-      currentAccount: { username: 'Alice' }
-    })
-    const currentAccount = (created.output as { currentAccount: { userId: string } }).currentAccount
-    expect(fixture.principalContext.current()).toMatchObject({
-      subject: currentAccount.userId,
-      assurance: 'local-selection'
-    })
-
-    const listed = await fixture.invoke(IDENTITY_CAPABILITY_IDS.listAccounts, {})
-    expect(listed.output).toMatchObject({
-      state: { accountCount: 1, currentAccount: { userId: currentAccount.userId } },
-      accounts: [{ userId: currentAccount.userId, username: 'Alice' }]
+    expect(fixture.principalContext.snapshot()).toEqual({
+      identityVersion: 0,
+      principal: null
     })
     fixture.dispose()
   })
@@ -113,103 +85,11 @@ describe('Identity Principal transition Host integration', () => {
     fixture.dispose()
   })
 
-  it('executes create, select, and exit through the real Broker transition handshake', async () => {
-    const fixture = identityBrokerFixture(temporaryRoot('sciforge-identity-broker-'))
-    const alice = await fixture.invoke(IDENTITY_CAPABILITY_IDS.createAccount, 'create-alice', {
-      username: 'Alice'
-    })
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.createAccount, 'create-alice', {
-      username: 'Alice'
-    })).resolves.toMatchObject({ replayed: true, output: alice.output })
-    const bob = await fixture.invoke(IDENTITY_CAPABILITY_IDS.createAccount, 'create-bob', {
-      username: 'Bob'
-    })
-    const aliceId = currentAccountId(alice.output)
-    const bobId = currentAccountId(bob.output)
-
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.selectAccount, 'select-alice', {
-      userId: aliceId
-    })).resolves.toMatchObject({
-      output: { currentAccount: { userId: aliceId } },
-      replayed: false
-    })
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.selectAccount, 'select-alice', {
-      userId: aliceId
-    })).resolves.toMatchObject({ replayed: true })
-    expect(fixture.provider.current()).toMatchObject({ subject: aliceId })
-
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.selectAccount, 'select-bob', {
-      userId: bobId
-    })).resolves.toMatchObject({ output: { currentAccount: { userId: bobId } } })
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.selectAccount, 'select-alice', {
-      userId: aliceId
-    })).rejects.toMatchObject({ code: 'idempotency_post_state_mismatch' })
-
-    const exited = await fixture.invoke(IDENTITY_CAPABILITY_IDS.exitAccount, 'exit-account', {})
-    expect(exited).toMatchObject({ output: { currentAccount: null }, replayed: false })
-    await expect(fixture.invoke(IDENTITY_CAPABILITY_IDS.exitAccount, 'exit-account', {}))
-      .resolves.toMatchObject({ output: exited.output, replayed: true })
-    expect(fixture.provider.current()).toBeUndefined()
-    expect(fixture.calls(IDENTITY_CAPABILITY_IDS.createAccount)).toBe(2)
-    expect(fixture.calls(IDENTITY_CAPABILITY_IDS.selectAccount)).toBe(2)
-    expect(fixture.calls(IDENTITY_CAPABILITY_IDS.exitAccount)).toBe(1)
-    fixture.dispose()
-  })
-
-  it('backs up a corrupt database once and binds reset replay to the committed signed-out state', async () => {
-    const root = temporaryRoot('sciforge-identity-reset-broker-')
-    const identityDirectory = join(root, 'identity-access')
-    mkdirSync(identityDirectory, { recursive: true })
-    writeFileSync(join(identityDirectory, 'identity.sqlite'), 'corrupt identity database')
-    const fixture = identityBrokerFixture(root)
-    expect(fixture.provider.snapshot()).toMatchObject({ principal: null })
-
-    const reset = await fixture.invoke(
-      IDENTITY_CAPABILITY_IDS.backupAndReset,
-      'reset-corrupt-identity',
-      { secondConfirmation: IDENTITY_RESET_CONFIRMATION },
-      'confirmation'
-    )
-    expect(reset).toMatchObject({
-      output: { state: { status: 'available', currentAccount: null } },
-      replayed: false
-    })
-    await expect(fixture.invoke(
-      IDENTITY_CAPABILITY_IDS.backupAndReset,
-      'reset-corrupt-identity',
-      { secondConfirmation: IDENTITY_RESET_CONFIRMATION },
-      'confirmation'
-    )).resolves.toMatchObject({ output: reset.output, replayed: true })
-    expect(fixture.calls(IDENTITY_CAPABILITY_IDS.backupAndReset)).toBe(1)
-    expect(readdirSync(identityDirectory).filter((name) => name.includes('.backup-'))).toHaveLength(1)
-
-    await expect(fixture.invoke(
-      IDENTITY_CAPABILITY_IDS.backupAndReset,
-      'reset-corrupt-identity-again',
-      { secondConfirmation: IDENTITY_RESET_CONFIRMATION },
-      'confirmation'
-    )).rejects.toMatchObject({ code: 'handler_failed' })
-    expect(fixture.calls(IDENTITY_CAPABILITY_IDS.backupAndReset)).toBe(2)
-    expect(readdirSync(identityDirectory).filter((name) => name.includes('.backup-'))).toHaveLength(1)
-
-    await fixture.invoke(IDENTITY_CAPABILITY_IDS.createAccount, 'create-after-reset', {
-      username: 'Alice'
-    })
-    await expect(fixture.invoke(
-      IDENTITY_CAPABILITY_IDS.backupAndReset,
-      'reset-corrupt-identity',
-      { secondConfirmation: IDENTITY_RESET_CONFIRMATION },
-      'confirmation'
-    )).rejects.toMatchObject({ code: 'idempotency_post_state_mismatch' })
-    expect(readdirSync(identityDirectory).filter((name) => name.includes('.backup-'))).toHaveLength(1)
-    fixture.dispose()
-  })
-
   it('re-issues Cloud resources across Principal transitions and emits only provider changes', async () => {
     const fixture = cloudIdentityBrokerFixture()
-    const localInspection = await fixture.inspect('inspect-local')
-    const localHandle = cloudHandle(localInspection.output)
-    await expect(fixture.observe(localHandle)).resolves.toMatchObject({
+    const signedOutInspection = await fixture.inspect('inspect-signed-out-initial')
+    const initialSignedOutHandle = cloudHandle(signedOutInspection.output)
+    await expect(fixture.observe(initialSignedOutHandle)).resolves.toMatchObject({
       state: { identity: { state: 'signed-out' } }
     })
 
@@ -227,13 +107,13 @@ describe('Identity Principal transition Host integration', () => {
     })
     expect(fixture.handlerResource(IDENTITY_CAPABILITY_IDS.cloudLogin)).toBeUndefined()
     expect(fixture.events()).toEqual([])
-    await expect(fixture.observe(localHandle)).rejects.toMatchObject({
+    await expect(fixture.observe(initialSignedOutHandle)).rejects.toMatchObject({
       code: 'resource_scope_mismatch'
     })
 
     const cloudInspection = await fixture.inspect('inspect-cloud')
     const cloudHandleValue = cloudHandle(cloudInspection.output)
-    expect(cloudHandleValue.token).not.toBe(localHandle.token)
+    expect(cloudHandleValue.token).not.toBe(initialSignedOutHandle.token)
     await expect(fixture.observe(cloudHandleValue)).resolves.toMatchObject({
       state: { identity: { state: 'signed-in' } }
     })
@@ -279,8 +159,8 @@ describe('Identity Principal transition Host integration', () => {
       code: 'resource_scope_mismatch'
     })
 
-    const signedOutInspection = await fixture.inspect('inspect-signed-out')
-    const signedOutHandle = cloudHandle(signedOutInspection.output)
+    const finalSignedOutInspection = await fixture.inspect('inspect-signed-out')
+    const signedOutHandle = cloudHandle(finalSignedOutInspection.output)
     expect(signedOutHandle.token).not.toBe(cloudHandleValue.token)
     await expect(fixture.observe(signedOutHandle)).resolves.toMatchObject({
       state: { identity: { state: 'signed-out' }, revision: 'cloud-4' }
@@ -419,10 +299,16 @@ function identityBrokerFixture(root: string) {
 }
 
 function cloudIdentityBrokerFixture() {
-  const localPrincipal = principalContext(1, 'sciforge.identity-access', 'local-user', 'local-selection')
-  const cloudPrincipal = principalContext(2, 'sciforge-cloud', 'usr_CloudUser000001', 'cloud-authenticated')
-  const signedOutPrincipal = principalContext(3, 'sciforge.identity-access', 'local-user', 'local-selection')
-  let currentPrincipal = localPrincipal
+  const initialSignedOutPrincipal = definePrincipalContextSnapshot({
+    identityVersion: 1,
+    principal: null
+  })
+  const cloudPrincipal = principalContext(2, 'usr_CloudUser000001')
+  const signedOutPrincipal = definePrincipalContextSnapshot({
+    identityVersion: 3,
+    principal: null
+  })
+  let currentPrincipal = initialSignedOutPrincipal
   let revision = 1
   let signedIn = false
   const listeners = new Set<() => void>()
@@ -479,7 +365,6 @@ function cloudIdentityBrokerFixture() {
     defineCapability: (options) => defineCapability(
       options as unknown as DefineCapabilityOptions<z.ZodType, z.ZodType>
     ),
-    getService: () => ({}) as never,
     getCloudRuntime: () => runtime as never
   })
   const definitions = factory.createDefinitions().map((definition) => ({
@@ -514,19 +399,15 @@ function cloudIdentityBrokerFixture() {
 
 function principalContext(
   identityVersion: number,
-  authority: string,
-  subject: string,
-  assurance: 'local-selection' | 'cloud-authenticated'
+  subject: string
 ): PrincipalContextSnapshot {
   return definePrincipalContextSnapshot({
     identityVersion,
     principal: {
-      authority,
+      authority: 'sciforge-cloud',
       subject,
-      assurance,
-      deviceId: assurance === 'cloud-authenticated'
-        ? 'dev_CloudDevice0001'
-        : 'device-integration-1',
+      assurance: 'cloud-authenticated',
+      deviceId: 'dev_CloudDevice0001',
       identityVersion
     }
   })
@@ -592,14 +473,6 @@ function memorySecrets() {
       values.delete(key)
     }
   }
-}
-
-function currentAccountId(output: unknown): string {
-  const candidate = output as { currentAccount?: { userId?: unknown } }
-  if (typeof candidate.currentAccount?.userId !== 'string') {
-    throw new Error('Identity transition did not return a current account.')
-  }
-  return candidate.currentAccount.userId
 }
 
 function temporaryRoot(prefix: string): string {

@@ -70,9 +70,9 @@ import {
 } from '../modules/runtime-contributions'
 
 const principal: PrincipalSnapshot = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection',
+  assurance: 'cloud-authenticated',
   deviceId: 'content-space-broker-integration-device',
   identityVersion: 1
 })

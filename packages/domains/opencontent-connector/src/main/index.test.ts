@@ -36,18 +36,11 @@ import {
 const OPENCONTENT_PROVIDER_INSTANCE_REF = 'opencontent-edoc2-demo' as const
 
 const principal = Object.freeze({
-  authority: 'sciforge.local-account',
-  subject: 'local-user-1',
-  assurance: 'local-selection' as const,
-  deviceId: 'device-1',
-  identityVersion: 4
-})
-const cloudPrincipal = Object.freeze({
-  ...principal,
-  authority: 'sciforge.identity-access',
-  subject: 'cloud-user-1',
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser000001',
   assurance: 'cloud-authenticated' as const,
-  deviceId: 'cloud-device-1'
+  deviceId: 'dev_CloudDevice0001',
+  identityVersion: 4
 })
 const bindingAttestation = Object.freeze({
   providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF,
@@ -174,7 +167,7 @@ describe('OpenContent connection capabilities', () => {
     const connections = connectionService()
     const definitions = capabilityDefinitions(connections)
     const context = {
-      caller: { audience: 'ui' as const, principal: cloudPrincipal },
+      caller: { audience: 'ui' as const, principal },
       assertPrincipalCurrent: vi.fn()
     }
     const status = definitions.find(({ id }) => id === OPENCONTENT_CONNECTION_CAPABILITY_IDS.status)!
@@ -192,13 +185,13 @@ describe('OpenContent connection capabilities', () => {
     }, context)
 
     expect(connections.status).toHaveBeenCalledWith(expect.objectContaining({
-      principal: cloudPrincipal
+      principal
     }))
     expect(connections.enroll).toHaveBeenCalledWith(expect.objectContaining({
-      principal: cloudPrincipal
+      principal
     }))
     expect(connections.unbind).toHaveBeenCalledWith(expect.objectContaining({
-      principal: cloudPrincipal
+      principal
     }))
     expect(context.assertPrincipalCurrent).toHaveBeenCalledTimes(3)
   })
@@ -209,7 +202,7 @@ describe('OpenContent connection capabilities', () => {
       const connections = connectionService()
       const definitions = capabilityDefinitions(connections)
       const context = {
-        caller: { audience, principal: cloudPrincipal },
+        caller: { audience, principal },
         assertPrincipalCurrent: vi.fn()
       }
 

@@ -15,7 +15,7 @@ import type {
   DesktopIdentityActionResult,
   DesktopIdentityStatus
 } from '../contract.js'
-import { LocalCloudIdentityLinkService } from './cloud-link-service.js'
+import { CloudPrincipalStateService } from './cloud-principal-state.js'
 import {
   createUnavailableCloudIdentityClient,
   resolveDesktopIdentityRuntimeConfig
@@ -33,9 +33,9 @@ import { restResponseSchema } from '@sciforge/collaboration-contracts'
 
 type CloudIdentityRuntimeError = NonNullable<CloudIdentitySnapshot['error']>
 
-type CloudIdentityLinks = Pick<
-  LocalCloudIdentityLinkService,
-  'linkIdentity' | 'linkDevice' | 'clearActiveDevice' | 'setAuthenticatedCloudUser' | 'close'
+type CloudPrincipalState = Pick<
+  CloudPrincipalStateService,
+  'linkDevice' | 'clearActiveDevice' | 'setAuthenticatedCloudUser' | 'close'
 >
 
 export type CloudIdentityRuntimeOptions = Readonly<{
@@ -53,7 +53,7 @@ export type CloudIdentityRuntimeOptions = Readonly<{
 export class CloudIdentityRuntime {
   readonly #identity: DesktopIdentityService
   readonly #device: DesktopDeviceService
-  readonly #links: CloudIdentityLinks
+  readonly #principalState: CloudPrincipalState
   readonly #listeners = new Set<() => void>()
   readonly #disposeIdentitySubscription: () => void
   readonly #disposeDeviceSubscription: () => void
@@ -72,7 +72,7 @@ export class CloudIdentityRuntime {
   private constructor(input: Readonly<{
     identity: DesktopIdentityService
     device: DesktopDeviceService
-    links: CloudIdentityLinks
+    principalState: CloudPrincipalState
     cloudBaseUrl: string | null
     transportUnavailableReason: string | null
     fetchImpl: typeof fetch
@@ -81,7 +81,7 @@ export class CloudIdentityRuntime {
   }>) {
     this.#identity = input.identity
     this.#device = input.device
-    this.#links = input.links
+    this.#principalState = input.principalState
     this.#cloudBaseUrl = input.cloudBaseUrl
     this.#transportUnavailableReason = input.transportUnavailableReason
     this.#fetch = input.fetchImpl
@@ -122,8 +122,8 @@ export class CloudIdentityRuntime {
         })
       : createUnavailableCloudIdentityClient(identityConfig.error)
     const appVersion = options.appVersion ?? await readApplicationVersion(options.appRoot)
-    const linkResult = createCloudIdentityLinks(options.userDataDir)
-    const links = linkResult.links
+    const principalStateResult = createCloudPrincipalState(options.userDataDir)
+    const principalState = principalStateResult.principalState
     const navigationError = options.externalNavigation
       ? undefined
       : 'Cloud identity requires the Host external-navigation service.'
@@ -148,15 +148,6 @@ export class CloudIdentityRuntime {
         audience: 'sciforge-cloud-api',
         identityClient,
         sessionStore: new PrivateVaultDesktopIdentitySessionStore(options.privateVault),
-        linkAuthenticatedUser: (user) => {
-          links.linkIdentity({
-            cloudUserId: user.userId,
-            oidcIdentityId: user.oidcIdentityId,
-            issuer: user.issuer,
-            subject: user.subject,
-            displayName: user.displayName
-          })
-        },
         ...(configurationError ? { configurationError } : {}),
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
         openExternal
@@ -168,25 +159,25 @@ export class CloudIdentityRuntime {
         vault: options.privateVault,
         appVersion,
         linkDevice: (cloudDevice) => {
-          links.linkDevice(cloudDevice.userId, cloudDevice.deviceId, cloudDevice.status)
+          principalState.linkDevice(cloudDevice.userId, cloudDevice.deviceId, cloudDevice.status)
         }
       })
       return new CloudIdentityRuntime({
         identity,
         device,
-        links,
+        principalState,
         cloudBaseUrl,
         transportUnavailableReason: configurationError || null,
         fetchImpl: options.fetchImpl ?? fetch,
         onAuthorityInvalidated: options.onAuthorityInvalidated ?? (() => undefined),
-        ...(linkResult.error ? { runtimeError: linkResult.error } : {})
+        ...(principalStateResult.error ? { runtimeError: principalStateResult.error } : {})
       })
     } catch (error) {
       const cleanupErrors: unknown[] = []
       for (const close of [
         () => device?.close(),
         () => identity?.close(),
-        () => links.close()
+        () => principalState.close()
       ]) {
         try {
           close()
@@ -334,11 +325,20 @@ export class CloudIdentityRuntime {
           : 'Register this Desktop Device before continuing.'
       }
     }
+    const deviceAuthority = this.#device.getActiveDeviceAuthority()
+    if (!deviceAuthority || deviceAuthority.userId !== identity.user.userId ||
+      deviceAuthority.deviceId !== device.device.deviceId) {
+      return {
+        state: 'unavailable',
+        reason: 'SciForge Cloud Device authority is inconsistent with the current OIDC User.'
+      }
+    }
     return {
       state: 'ready',
       baseUrl: this.#cloudBaseUrl,
       userId: identity.user.userId,
-      deviceId: device.device.deviceId
+      deviceId: deviceAuthority.deviceId,
+      deviceEntityRevision: deviceAuthority.revision
     }
   }
 
@@ -422,13 +422,13 @@ export class CloudIdentityRuntime {
     this.#disposeIdentitySubscription()
     this.#device.close()
     this.#identity.close()
-    this.#links.close()
+    this.#principalState.close()
     this.#listeners.clear()
   }
 
   #projectAuthenticatedUser(status: DesktopIdentityStatus): void {
     try {
-      this.#links.setAuthenticatedCloudUser(
+      this.#principalState.setAuthenticatedCloudUser(
         status.state === 'signed-in' ? status.user.userId : null
       )
       this.#runtimeError = undefined
@@ -444,7 +444,7 @@ export class CloudIdentityRuntime {
 
   #clearActiveDeviceAuthority(): void {
     try {
-      this.#links.clearActiveDevice()
+      this.#principalState.clearActiveDevice()
     } catch (error) {
       this.#runtimeError = {
         source: 'runtime',
@@ -574,22 +574,21 @@ async function readApplicationVersion(appRoot: string): Promise<string> {
   return version
 }
 
-function createCloudIdentityLinks(userDataDir: string): Readonly<{
-  links: CloudIdentityLinks
+function createCloudPrincipalState(userDataDir: string): Readonly<{
+  principalState: CloudPrincipalState
   error?: CloudIdentityRuntimeError
 }> {
   try {
-    return { links: new LocalCloudIdentityLinkService(userDataDir) }
+    return { principalState: new CloudPrincipalStateService(userDataDir) }
   } catch (error) {
     const message = error instanceof Error
-      ? `Local cloud identity storage is unavailable: ${error.message}`
-      : 'Local cloud identity storage is unavailable.'
+      ? `Cloud Principal state is unavailable: ${error.message}`
+      : 'Cloud Principal state is unavailable.'
     const unavailable = (): never => {
       throw new Error(message)
     }
     return {
-      links: Object.freeze({
-        linkIdentity: unavailable,
+      principalState: Object.freeze({
         linkDevice: unavailable,
         clearActiveDevice: unavailable,
         setAuthenticatedCloudUser: unavailable,

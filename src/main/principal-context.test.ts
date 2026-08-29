@@ -7,9 +7,9 @@ import type { DomainModuleCatalog } from './modules/catalog.js'
 import { HostPrincipalContext } from './principal-context.js'
 
 const principal: PrincipalSnapshot = {
-  authority: 'sciforge.identity-access',
-  subject: 'usr_local-alice',
-  assurance: 'local-selection',
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudAlice0001',
+  assurance: 'cloud-authenticated',
   deviceId: 'installation-01',
   identityVersion: 2
 }
@@ -65,7 +65,7 @@ describe('Host Principal context', () => {
       ...provider,
       snapshot: () => ({
         identityVersion: 2,
-        principal: { ...principal, subject: 'usr_local-bob' }
+        principal: { ...principal, subject: 'usr_CloudBob000001' }
       })
     }]))
     expect(() => inconsistent.current()).toThrow(/inconsistent/u)

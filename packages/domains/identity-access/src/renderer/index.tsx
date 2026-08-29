@@ -18,7 +18,7 @@ import {
   IDENTITY_RENDERER_TOOLBAR_ACTION_CONTRIBUTION,
   domainPackageDefinition
 } from '../definition.js'
-import { IdentityAccountOverlay } from './IdentityAccountOverlay.js'
+import { IdentityOverlay } from './IdentityOverlay.js'
 import { createIdentityRendererClient } from './client.js'
 import {
   identityI18nResourceContribution,
@@ -70,34 +70,16 @@ export function createDomainRendererEntry(
   const overlay: DomainRendererWorkbenchGlobalOverlayValue<ReactElement> =
     Object.freeze({
       render: (context) => (
-        <IdentityAccountOverlay
+        <IdentityOverlay
           projection={projection}
-          firstRun={isFirstRunActivation(context.activation?.payload)}
           onClose={context.onClose}
         />
       )
     })
   const lifecycle: IdentityRendererLifecycle = Object.freeze({
     activate: () => {
-      let disposed = false
-      void projection.load().then((snapshot) => {
-        if (
-          disposed ||
-          snapshot.state?.status !== 'available' ||
-          snapshot.state.accountCount !== 0 ||
-          snapshot.state.firstPromptDismissed
-        ) return
-        workbench.toggleGlobalOverlay!({
-          contributionId: IDENTITY_RENDERER_GLOBAL_OVERLAY_CONTRIBUTION.id,
-          open: true,
-          activation: {
-            revision: 1,
-            payload: { mode: 'first-run' }
-          }
-        })
-      })
+      void projection.load()
       return () => {
-        disposed = true
         projection.dispose()
       }
     }
@@ -130,14 +112,6 @@ export function createDomainRendererEntry(
       }
     ]
   })
-}
-
-function isFirstRunActivation(payload: unknown): boolean {
-  return typeof payload === 'object' &&
-    payload !== null &&
-    !Array.isArray(payload) &&
-    'mode' in payload &&
-    payload.mode === 'first-run'
 }
 
 export * from './client.js'

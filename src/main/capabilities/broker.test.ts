@@ -30,9 +30,9 @@ const ui: CapabilityCallerContextInput = {
 }
 
 const principalA: PrincipalSnapshot = {
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: 'person-a',
-  assurance: 'local-selection',
+  assurance: 'cloud-authenticated',
   deviceId: 'installation-1',
   identityVersion: 1
 }

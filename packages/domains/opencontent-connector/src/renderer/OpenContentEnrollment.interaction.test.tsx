@@ -45,7 +45,7 @@ describe('OpenContent enrollment fragment', () => {
       })
     })
 
-    expect(mounted.container.textContent).toContain('Connect OpenContent')
+    expect(mounted.container.textContent).toContain('OpenContent · 未登录')
     expect(status).not.toHaveBeenCalled()
   })
 
@@ -53,7 +53,7 @@ describe('OpenContent enrollment fragment', () => {
     const client = connectionClient()
     const mounted = await mountEnrollment({ client })
 
-    expect(mounted.container.textContent).toContain('Connect OpenContent')
+    expect(mounted.container.textContent).toContain('OpenContent · 未登录')
     expect(mounted.container.textContent).not.toContain('OpenContent Connection')
     expect(mounted.container.querySelector('[role="status"]')?.textContent)
       .toContain('Ready to connect')
@@ -194,7 +194,7 @@ describe('OpenContent enrollment fragment', () => {
     await setInputValue(inputByLabel(mounted.container, 'Password'), 'one-use-secret')
     await click(buttonByText(mounted.container, 'Connect account'))
 
-    expect(mounted.container.textContent).toContain('Account connected')
+    expect(mounted.container.textContent).toContain('OpenContent · 已登录')
     expect(mounted.container.textContent).not.toContain('Research Library')
     expect(mounted.container.textContent).not.toContain('scientist@example.org')
     expect(mounted.container.textContent).not.toContain('one-use-secret')
@@ -209,7 +209,7 @@ describe('OpenContent enrollment fragment', () => {
       viewState: resolvedViewState(reauthenticationRequiredResult())
     })
 
-    expect(mounted.container.textContent).toContain('Reconnect OpenContent')
+    expect(mounted.container.textContent).toContain('OpenContent · 登录已过期')
     expect(mounted.container.querySelector('[role="alert"]')?.textContent)
       .toContain('sign in again')
     expect(inputByLabel(mounted.container, 'OpenContent account').value).toBe('')
@@ -269,7 +269,7 @@ describe('OpenContent enrollment fragment', () => {
       OPENCONTENT_PROVIDER_INSTANCE_REF,
       { signal: expect.any(AbortSignal) }
     )
-    expect(mounted.container.textContent).toContain('Connect OpenContent')
+    expect(mounted.container.textContent).toContain('OpenContent · 未登录')
     expect(onConnectionChanged).toHaveBeenCalledTimes(1)
   })
 
@@ -378,7 +378,7 @@ describe('OpenContent enrollment fragment', () => {
 
     expect(bindSignal?.aborted).toBe(true)
     expect(submittedCredentials).toEqual({ account: '', password: '' })
-    expect(mounted.container.textContent).toContain('Connect OpenContent')
+    expect(mounted.container.textContent).toContain('OpenContent · 未登录')
     expect(mounted.container.textContent).not.toContain('Stale Research Library')
     expect(inputByLabel(mounted.container, 'OpenContent account').value).toBe('')
     expect(inputByLabel(mounted.container, 'Password').value).toBe('')

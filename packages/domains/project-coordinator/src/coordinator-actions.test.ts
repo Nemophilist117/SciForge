@@ -175,7 +175,8 @@ test('Coordinator creates Project-scoped HumanNeeded for one explicit Project me
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: projectFixture.ownerUserId,
-      deviceId: TEST_IDS.deviceId
+      deviceId: TEST_IDS.deviceId,
+      deviceEntityRevision: 1
     }),
     execute: async ({ payload }) => {
       const command = payload as RestRequest

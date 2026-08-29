@@ -386,9 +386,9 @@ describe('main runtime contributions', () => {
 
   it('projects only canonical Principal and execution-context digests to system handlers', async () => {
     const principal = Object.freeze({
-      authority: 'sciforge.local-identity',
+      authority: 'sciforge-cloud',
       subject: 'person-1',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'device-1',
       identityVersion: 7
     })
@@ -448,7 +448,7 @@ describe('main runtime contributions', () => {
 
     await expect(invoker.invoke(contract, {}, options)).resolves.toEqual({
       principalSnapshotDigest: createHash('sha256').update(
-        '{"assurance":"local-selection","authority":"sciforge.local-identity",' +
+        '{"assurance":"cloud-authenticated","authority":"sciforge-cloud",' +
         '"deviceId":"device-1","identityVersion":7,"subject":"person-1"}'
       ).digest('hex'),
       executionContextDigest: createHash('sha256').update(
@@ -465,7 +465,7 @@ describe('main runtime contributions', () => {
     }
     await expect(invoker.invoke(contract, {}, callerAuthoredDigestOptions)).resolves.toEqual({
       principalSnapshotDigest: createHash('sha256').update(
-        '{"assurance":"local-selection","authority":"sciforge.local-identity",' +
+        '{"assurance":"cloud-authenticated","authority":"sciforge-cloud",' +
         '"deviceId":"device-1","identityVersion":7,"subject":"person-1"}'
       ).digest('hex'),
       executionContextDigest: createHash('sha256').update(
@@ -483,9 +483,9 @@ describe('main runtime contributions', () => {
 
   it('issues a fresh Host invocation identity for execution-bound system reads', async () => {
     const principal = Object.freeze({
-      authority: 'sciforge.local-identity',
+      authority: 'sciforge-cloud',
       subject: 'person-1',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'device-1',
       identityVersion: 1
     })
@@ -806,9 +806,9 @@ describe('main runtime contributions', () => {
 
   it('rejects inherited approval when the live Principal changed inside the outer action', async () => {
     const principalA = {
-      authority: 'sciforge.identity-access',
+      authority: 'sciforge-cloud',
       subject: 'person-a',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'installation-1',
       identityVersion: 1
     }
@@ -1001,7 +1001,7 @@ describe('main runtime contributions', () => {
 
   it('derives one exact finite batch from one Human confirmation and consumes each operation once', async () => {
     const principal = Object.freeze({
-      authority: 'sciforge.identity-access',
+      authority: 'sciforge-cloud',
       subject: 'owner-1',
       assurance: 'cloud-authenticated' as const,
       deviceId: 'device-1',
@@ -1275,7 +1275,7 @@ describe('main runtime contributions', () => {
 
   it('invalidates a finite batch on operation or resource revision drift and requires a new confirmation', async () => {
     const principal = Object.freeze({
-      authority: 'sciforge.identity-access',
+      authority: 'sciforge-cloud',
       subject: 'owner-2',
       assurance: 'cloud-authenticated' as const,
       deviceId: 'device-2',

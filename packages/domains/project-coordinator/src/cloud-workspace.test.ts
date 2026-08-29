@@ -67,7 +67,8 @@ test('current Device Agent Project create returns a workspace focused on the exa
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async (request) => {
       requests.push(request)
@@ -165,7 +166,8 @@ test('Agent-authored Project create rejects a Cloud response that changes the cr
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => { throw new Error('User transport must not create Projects.') }
   }
@@ -249,7 +251,8 @@ test('invited User workspace reads only the bounded invitation fact collections'
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: invitation.userId,
-      deviceId: 'dev_WorkerDevice01'
+      deviceId: 'dev_WorkerDevice01',
+      deviceEntityRevision: 1
     }),
     execute: async (request) => {
       requests.push(request)
@@ -342,7 +345,8 @@ test('Cloud-global online Worker Users stay visible outside current Project memb
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => {
       const next = responses.shift()
@@ -430,7 +434,8 @@ test('Project read selects the one non-superseded Plan instead of relying on pag
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => {
       const next = responses.shift()
@@ -515,7 +520,8 @@ test('Project read projects pending member-targeted HumanNeeded and accepted Coo
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: project.ownerUserId,
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => {
       const next = responses.shift()
@@ -683,7 +689,8 @@ test('Project read keeps membership, Provider observation, readiness, and recove
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: project.ownerUserId,
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => {
       const next = responses.shift()

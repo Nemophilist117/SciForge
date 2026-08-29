@@ -30,7 +30,6 @@ export type DesktopIdentityServiceOptions = {
   audience: string
   identityClient: Pick<CloudIdentityClient, 'getCurrentUser'>
   sessionStore: DesktopIdentitySessionStore
-  linkAuthenticatedUser?: (user: DesktopIdentityUser) => void | Promise<void>
   openExternal: (url: string) => Promise<unknown>
   configurationError?: string
   redirectUri?: string
@@ -743,11 +742,6 @@ export class DesktopIdentityService {
       ...(tokens.idToken ? { idToken: tokens.idToken } : {})
     }
     const status = statusFromClaims(verified.accessClaims, verified.idClaims, currentUser)
-    if (status.state === 'signed-in') {
-      if (!this.isSessionOperationCurrent(generation)) return false
-      await this.options.linkAuthenticatedUser?.(status.user)
-      if (!this.isSessionOperationCurrent(generation)) return false
-    }
     if (!this.isSessionOperationCurrent(generation)) return false
     await this.enqueueSessionPersistence(() => this.options.sessionStore.save(stored))
     if (!this.isSessionOperationCurrent(generation)) return false

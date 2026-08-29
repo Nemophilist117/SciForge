@@ -76,9 +76,9 @@ const FILE = Object.freeze({
   fileId: 'file-one'
 })
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'content-space-service-test-device',
   identityVersion: 1
 })
@@ -137,6 +137,98 @@ const defaultDownloadFile: ProviderDownloadDispatch = async ({ context, referenc
 })
 
 describe('ContentSpaceService', () => {
+  it('observes one provider-owned User through the pinned Provider and two binding attestations', async () => {
+    const attestExternalBinding = vi.fn<ContentSpaceProvider['attestExternalBinding']>(
+      async () => externalBinding
+    )
+    const execute = vi.fn(async (input: Parameters<
+      ContentSpaceExtendedOperationsExecutor['execute']
+    >[0]) => {
+      expect(input).toMatchObject({
+        effect: 'read',
+        context: {
+          providerInstanceRef: PROVIDER_INSTANCE_REF,
+          expectedExternalBinding: externalBinding
+        },
+        target: {
+          kind: 'provider-administration',
+          providerInstanceRef: PROVIDER_INSTANCE_REF
+        },
+        operation: 'getCurrentPrincipal',
+        request: { providerInstanceRef: PROVIDER_INSTANCE_REF }
+      })
+      return Object.freeze({
+        ok: true as const,
+        value: Object.freeze({
+          reference: Object.freeze({
+            providerInstanceRef: PROVIDER_INSTANCE_REF,
+            kind: 'user' as const,
+            principalId: 'provider-user-001'
+          }),
+          displayName: 'Provider User'
+        })
+      })
+    })
+    const service = serviceFor(providerFixture({
+      attestExternalBinding,
+      features: { extendedOperations: extendedOperationsFixture(execute) }
+    }))
+
+    await expect(service.observeProviderPrincipalBinding(
+      PROVIDER_INSTANCE_REF,
+      { ...writeCall(), audience: 'ui' }
+    )).resolves.toEqual({
+      providerInstanceRef: PROVIDER_INSTANCE_REF,
+      binding: externalBinding,
+      directoryUser: {
+        providerInstanceRef: PROVIDER_INSTANCE_REF,
+        kind: 'user',
+        principalId: 'provider-user-001'
+      }
+    })
+    expect(attestExternalBinding).toHaveBeenCalledTimes(2)
+    expect(attestExternalBinding.mock.calls[0]?.[0]).not.toHaveProperty(
+      'expectedExternalBinding'
+    )
+    expect(attestExternalBinding.mock.calls[1]?.[0]).toMatchObject({
+      expectedExternalBinding: externalBinding
+    })
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
+  it('fails closed when the Provider binding drifts around directory observation', async () => {
+    const attestExternalBinding = vi.fn()
+      .mockResolvedValueOnce(externalBinding)
+      .mockResolvedValueOnce(Object.freeze({
+        ...externalBinding,
+        bindingRevision: 'c'.repeat(64)
+      }))
+    const execute = vi.fn(async () => Object.freeze({
+      ok: true as const,
+      value: Object.freeze({
+        reference: Object.freeze({
+          providerInstanceRef: PROVIDER_INSTANCE_REF,
+          kind: 'user' as const,
+          principalId: 'provider-user-001'
+        }),
+        displayName: 'Provider User'
+      })
+    }))
+    const service = serviceFor(providerFixture({
+      attestExternalBinding,
+      features: { extendedOperations: extendedOperationsFixture(execute) }
+    }))
+
+    await expect(service.observeProviderPrincipalBinding(
+      PROVIDER_INSTANCE_REF,
+      { ...writeCall(), audience: 'ui' }
+    )).rejects.toMatchObject({
+      detail: { code: 'unauthorized', retry: 'after-human-action' }
+    })
+    expect(attestExternalBinding).toHaveBeenCalledTimes(2)
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
   it('blocks each unready administration operation before binding the Provider feature', async () => {
     const createSpace = vi.fn(administrationPortFixture().createSpace)
     const describeOperations = vi.fn(() => administrationStates('list-spaces'))

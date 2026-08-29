@@ -4,7 +4,7 @@
 
 Authoritative source: `src/main/modules/index.ts`
 
-Registered actions: **292**
+Registered actions: **285**
 
 | Action ID | Version | Audiences | Effect | Approval | Scope |
 | --- | --- | --- | --- | --- | --- |
@@ -108,6 +108,7 @@ Registered actions: **292**
 | `content-space.observe-immutable-version` | 1.0.0 | ui | read | none | global |
 | `content-space.open-portal-target` | 1.0.0 | ui | external-write | confirmation | global |
 | `content-space.resolve-portal-target` | 1.0.0 | ui | read | none | global |
+| `content-space.sync-provider-principal` | 1.0.0 | ui | external-write | confirmation | global |
 | `content-space.system-download` | 1.0.0 | system | workspace-write | none | workspace |
 | `content-space.system-observe-exact-output` | 1.0.0 | system | read | none | workspace |
 | `content-space.system-transfer-preflight` | 1.0.0 | system | read | none | workspace |
@@ -177,14 +178,6 @@ Registered actions: **292**
 | `identity.cloud.reauthenticate` | 1.0.0 | ui | external-write | none | global |
 | `identity.cloud.refresh-devices` | 1.0.0 | ui | external-write | none | global |
 | `identity.cloud.revoke-device` | 1.0.0 | ui | external-write | none | global |
-| `identity.local.backup-and-reset` | 1.0.0 | ui | destructive | confirmation | global |
-| `identity.local.create-account` | 1.0.0 | ui | external-write | none | global |
-| `identity.local.dismiss-first-prompt` | 1.0.0 | ui | external-write | none | global |
-| `identity.local.exit-account` | 1.0.0 | ui | external-write | none | global |
-| `identity.local.inspect` | 1.0.0 | ui | read | none | global |
-| `identity.local.list-accounts` | 1.0.0 | ui | read | none | global |
-| `identity.local.rename-account` | 1.0.0 | ui | external-write | none | global |
-| `identity.local.select-account` | 1.0.0 | ui | external-write | none | global |
 | `opencontent.connection.bind` | 2.0.0 | ui | external-write | none | global |
 | `opencontent.connection.status` | 2.0.0 | ui | read | none | global |
 | `opencontent.connection.unbind` | 2.0.0 | ui | external-write | none | global |
@@ -51407,6 +51400,158 @@ Converts a bounded HTTPS Provider target into a Host-owned handle.
 }
 ```
 
+## `content-space.sync-provider-principal`
+
+Publishes the current provider-neutral Content Space directory binding to SciForge Cloud.
+
+- Version: `1.0.0`
+- Audiences: ui
+- Effect: `external-write`
+- Approval: confirmation
+- Scope: global
+
+### Contract
+
+```json
+{
+  "concurrency": {
+    "idempotency": "required",
+    "revision": "none"
+  },
+  "contractVersion": 3,
+  "inputSchema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "providerInstanceRef": {
+        "maxLength": 256,
+        "minLength": 3,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,255}$",
+        "type": "string"
+      }
+    },
+    "readOnly": true,
+    "required": [
+      "providerInstanceRef"
+    ],
+    "type": "object"
+  },
+  "outputSchema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "oneOf": [
+      {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "type": "boolean"
+          },
+          "value": {
+            "additionalProperties": false,
+            "properties": {
+              "providerInstanceRef": {
+                "maxLength": 256,
+                "minLength": 3,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,255}$",
+                "type": "string"
+              },
+              "status": {
+                "const": "synchronized",
+                "type": "string"
+              }
+            },
+            "readOnly": true,
+            "required": [
+              "providerInstanceRef",
+              "status"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "value"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_input",
+                  "invalid_reference",
+                  "invalid_target",
+                  "composition_not_ready",
+                  "invalid_contribution",
+                  "incompatible_contract_version",
+                  "unknown_provider_instance",
+                  "missing_provider",
+                  "provider_unavailable",
+                  "rate_limited",
+                  "provider_contract_violation",
+                  "unauthorized",
+                  "blocked_by_contract",
+                  "bounds_exceeded",
+                  "conflict",
+                  "outcome_unknown",
+                  "cancelled",
+                  "source_unavailable",
+                  "destination_unavailable",
+                  "unsafe_portal_target",
+                  "immutable_version_unproven"
+                ],
+                "type": "string"
+              },
+              "message": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "retry": {
+                "enum": [
+                  "never",
+                  "after-human-action",
+                  "safe-with-same-invocation"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "retry"
+            ],
+            "type": "object"
+          },
+          "ok": {
+            "const": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "error"
+        ],
+        "type": "object"
+      }
+    ]
+  },
+  "resourceKinds": [],
+  "tags": [
+    "content-space",
+    "provider-neutral",
+    "provider",
+    "identity",
+    "sync"
+  ],
+  "title": "Sync Content Space Provider Principal"
+}
+```
+
 ## `content-space.system-download`
 
 Downloads one freshly proven file to a new Workspace-relative destination.
@@ -51570,10 +51715,7 @@ Downloads one freshly proven file to a new Workspace-relative destination.
                     "additionalProperties": false,
                     "properties": {
                       "assurance": {
-                        "enum": [
-                          "local-selection",
-                          "cloud-authenticated"
-                        ],
+                        "const": "cloud-authenticated",
                         "type": "string"
                       },
                       "authority": {
@@ -52131,10 +52273,7 @@ Re-observes one exact no-overwrite output name after an uncertain Provider write
                     "additionalProperties": false,
                     "properties": {
                       "assurance": {
-                        "enum": [
-                          "local-selection",
-                          "cloud-authenticated"
-                        ],
+                        "const": "cloud-authenticated",
                         "type": "string"
                       },
                       "authority": {
@@ -52784,10 +52923,7 @@ Reads a fresh token-free current-session readiness fact for one exact transfer i
                     "additionalProperties": false,
                     "properties": {
                       "assurance": {
-                        "enum": [
-                          "local-selection",
-                          "cloud-authenticated"
-                        ],
+                        "const": "cloud-authenticated",
                         "type": "string"
                       },
                       "authority": {
@@ -53082,10 +53218,7 @@ Uploads one real Workspace file as a new entry in an exact authorized root.
                     "additionalProperties": false,
                     "properties": {
                       "assurance": {
-                        "enum": [
-                          "local-selection",
-                          "cloud-authenticated"
-                        ],
+                        "const": "cloud-authenticated",
                         "type": "string"
                       },
                       "authority": {
@@ -71907,1401 +72040,6 @@ Revokes one Device owned by the authenticated cloud User.
     "device"
   ],
   "title": "Revoke Cloud Device"
-}
-```
-
-## `identity.local.backup-and-reset`
-
-Backs up an unavailable Identity database before establishing a fresh one.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `destructive`
-- Approval: confirmation
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "secondConfirmation": {
-        "const": "RESET LOCAL IDENTITY",
-        "type": "string"
-      }
-    },
-    "required": [
-      "secondConfirmation"
-    ],
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "backupPath": {
-        "maxLength": 4096,
-        "minLength": 1,
-        "type": "string"
-      },
-      "state": {
-        "additionalProperties": false,
-        "properties": {
-          "accountCount": {
-            "maximum": 1024,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "currentAccount": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudIdentity": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "cloudUserId": {
-                        "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "deviceId": {
-                        "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "deviceStatus": {
-                        "enum": [
-                          "active",
-                          "revoked"
-                        ],
-                        "type": "string"
-                      },
-                      "issuer": {
-                        "format": "uri",
-                        "maxLength": 2048,
-                        "type": "string"
-                      },
-                      "oidcIdentityId": {
-                        "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "subject": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      }
-                    },
-                    "readOnly": true,
-                    "required": [
-                      "cloudUserId",
-                      "oidcIdentityId",
-                      "issuer",
-                      "subject"
-                    ],
-                    "type": "object"
-                  },
-                  "createdAt": {
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                    "type": "string"
-                  },
-                  "updatedAt": {
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                    "type": "string"
-                  },
-                  "userId": {
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                    "type": "string"
-                  },
-                  "username": {
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "userId",
-                  "username",
-                  "createdAt",
-                  "updatedAt"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "firstPromptDismissed": {
-            "type": "boolean"
-          },
-          "identityVersion": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "status": {
-            "const": "available",
-            "type": "string"
-          }
-        },
-        "readOnly": true,
-        "required": [
-          "status",
-          "identityVersion",
-          "currentAccount",
-          "accountCount",
-          "firstPromptDismissed"
-        ],
-        "type": "object"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "state",
-      "backupPath"
-    ],
-    "type": "object"
-  },
-  "principalTransition": "host-authority",
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Back Up and Reset Local Identity"
-}
-```
-
-## `identity.local.create-account`
-
-Creates and selects a display-only Local Account on this installation.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `external-write`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "username": {
-        "maxLength": 512,
-        "type": "string"
-      }
-    },
-    "required": [
-      "username"
-    ],
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accountCount": {
-        "maximum": 1024,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "currentAccount": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "cloudIdentity": {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudUserId": {
-                    "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceId": {
-                    "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceStatus": {
-                    "enum": [
-                      "active",
-                      "revoked"
-                    ],
-                    "type": "string"
-                  },
-                  "issuer": {
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "type": "string"
-                  },
-                  "oidcIdentityId": {
-                    "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "subject": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "cloudUserId",
-                  "oidcIdentityId",
-                  "issuer",
-                  "subject"
-                ],
-                "type": "object"
-              },
-              "createdAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "updatedAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "userId": {
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                "type": "string"
-              },
-              "username": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "userId",
-              "username",
-              "createdAt",
-              "updatedAt"
-            ],
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "firstPromptDismissed": {
-        "type": "boolean"
-      },
-      "identityVersion": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "status": {
-        "const": "available",
-        "type": "string"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "status",
-      "identityVersion",
-      "currentAccount",
-      "accountCount",
-      "firstPromptDismissed"
-    ],
-    "type": "object"
-  },
-  "principalTransition": "host-authority",
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Create Local Account"
-}
-```
-
-## `identity.local.dismiss-first-prompt`
-
-Persists dismissal of the optional Local Account first-run prompt.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `external-write`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {},
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accountCount": {
-        "maximum": 1024,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "currentAccount": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "cloudIdentity": {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudUserId": {
-                    "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceId": {
-                    "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceStatus": {
-                    "enum": [
-                      "active",
-                      "revoked"
-                    ],
-                    "type": "string"
-                  },
-                  "issuer": {
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "type": "string"
-                  },
-                  "oidcIdentityId": {
-                    "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "subject": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "cloudUserId",
-                  "oidcIdentityId",
-                  "issuer",
-                  "subject"
-                ],
-                "type": "object"
-              },
-              "createdAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "updatedAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "userId": {
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                "type": "string"
-              },
-              "username": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "userId",
-              "username",
-              "createdAt",
-              "updatedAt"
-            ],
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "firstPromptDismissed": {
-        "type": "boolean"
-      },
-      "identityVersion": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "status": {
-        "const": "available",
-        "type": "string"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "status",
-      "identityVersion",
-      "currentAccount",
-      "accountCount",
-      "firstPromptDismissed"
-    ],
-    "type": "object"
-  },
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Dismiss Local Account Prompt"
-}
-```
-
-## `identity.local.exit-account`
-
-Clears Local Account selection without changing installation-local data.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `external-write`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {},
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accountCount": {
-        "maximum": 1024,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "currentAccount": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "cloudIdentity": {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudUserId": {
-                    "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceId": {
-                    "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceStatus": {
-                    "enum": [
-                      "active",
-                      "revoked"
-                    ],
-                    "type": "string"
-                  },
-                  "issuer": {
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "type": "string"
-                  },
-                  "oidcIdentityId": {
-                    "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "subject": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "cloudUserId",
-                  "oidcIdentityId",
-                  "issuer",
-                  "subject"
-                ],
-                "type": "object"
-              },
-              "createdAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "updatedAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "userId": {
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                "type": "string"
-              },
-              "username": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "userId",
-              "username",
-              "createdAt",
-              "updatedAt"
-            ],
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "firstPromptDismissed": {
-        "type": "boolean"
-      },
-      "identityVersion": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "status": {
-        "const": "available",
-        "type": "string"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "status",
-      "identityVersion",
-      "currentAccount",
-      "accountCount",
-      "firstPromptDismissed"
-    ],
-    "type": "object"
-  },
-  "principalTransition": "host-authority",
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Exit Local Account"
-}
-```
-
-## `identity.local.inspect`
-
-Reads the current installation-local account selection state.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `read`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "none",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {},
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "oneOf": [
-      {
-        "additionalProperties": false,
-        "properties": {
-          "accountCount": {
-            "maximum": 1024,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "currentAccount": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudIdentity": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "cloudUserId": {
-                        "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "deviceId": {
-                        "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "deviceStatus": {
-                        "enum": [
-                          "active",
-                          "revoked"
-                        ],
-                        "type": "string"
-                      },
-                      "issuer": {
-                        "format": "uri",
-                        "maxLength": 2048,
-                        "type": "string"
-                      },
-                      "oidcIdentityId": {
-                        "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                        "type": "string"
-                      },
-                      "subject": {
-                        "maxLength": 512,
-                        "minLength": 1,
-                        "type": "string"
-                      }
-                    },
-                    "readOnly": true,
-                    "required": [
-                      "cloudUserId",
-                      "oidcIdentityId",
-                      "issuer",
-                      "subject"
-                    ],
-                    "type": "object"
-                  },
-                  "createdAt": {
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                    "type": "string"
-                  },
-                  "updatedAt": {
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                    "type": "string"
-                  },
-                  "userId": {
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                    "type": "string"
-                  },
-                  "username": {
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "userId",
-                  "username",
-                  "createdAt",
-                  "updatedAt"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "firstPromptDismissed": {
-            "type": "boolean"
-          },
-          "identityVersion": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "status": {
-            "const": "available",
-            "type": "string"
-          }
-        },
-        "readOnly": true,
-        "required": [
-          "status",
-          "identityVersion",
-          "currentAccount",
-          "accountCount",
-          "firstPromptDismissed"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "enum": [
-              "open-failed",
-              "integrity-failed",
-              "migration-failed"
-            ],
-            "type": "string"
-          },
-          "recoveryAvailable": {
-            "type": "boolean"
-          },
-          "status": {
-            "const": "unavailable",
-            "type": "string"
-          }
-        },
-        "readOnly": true,
-        "required": [
-          "status",
-          "reason",
-          "recoveryAvailable"
-        ],
-        "type": "object"
-      }
-    ]
-  },
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Inspect Local Identity"
-}
-```
-
-## `identity.local.list-accounts`
-
-Lists display-only Local Accounts stored in this installation.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `read`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "none",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {},
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accounts": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "cloudIdentity": {
-              "additionalProperties": false,
-              "properties": {
-                "cloudUserId": {
-                  "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                  "type": "string"
-                },
-                "deviceId": {
-                  "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                  "type": "string"
-                },
-                "deviceStatus": {
-                  "enum": [
-                    "active",
-                    "revoked"
-                  ],
-                  "type": "string"
-                },
-                "issuer": {
-                  "format": "uri",
-                  "maxLength": 2048,
-                  "type": "string"
-                },
-                "oidcIdentityId": {
-                  "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                  "type": "string"
-                },
-                "subject": {
-                  "maxLength": 512,
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "readOnly": true,
-              "required": [
-                "cloudUserId",
-                "oidcIdentityId",
-                "issuer",
-                "subject"
-              ],
-              "type": "object"
-            },
-            "createdAt": {
-              "format": "date-time",
-              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-              "type": "string"
-            },
-            "updatedAt": {
-              "format": "date-time",
-              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-              "type": "string"
-            },
-            "userId": {
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-              "type": "string"
-            },
-            "username": {
-              "maxLength": 64,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "readOnly": true,
-          "required": [
-            "userId",
-            "username",
-            "createdAt",
-            "updatedAt"
-          ],
-          "type": "object"
-        },
-        "maxItems": 1024,
-        "type": "array"
-      },
-      "state": {
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "accountCount": {
-                "maximum": 1024,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "currentAccount": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "cloudIdentity": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "cloudUserId": {
-                            "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                            "type": "string"
-                          },
-                          "deviceId": {
-                            "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                            "type": "string"
-                          },
-                          "deviceStatus": {
-                            "enum": [
-                              "active",
-                              "revoked"
-                            ],
-                            "type": "string"
-                          },
-                          "issuer": {
-                            "format": "uri",
-                            "maxLength": 2048,
-                            "type": "string"
-                          },
-                          "oidcIdentityId": {
-                            "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                            "type": "string"
-                          },
-                          "subject": {
-                            "maxLength": 512,
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "readOnly": true,
-                        "required": [
-                          "cloudUserId",
-                          "oidcIdentityId",
-                          "issuer",
-                          "subject"
-                        ],
-                        "type": "object"
-                      },
-                      "createdAt": {
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                        "type": "string"
-                      },
-                      "updatedAt": {
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                        "type": "string"
-                      },
-                      "userId": {
-                        "format": "uuid",
-                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                        "type": "string"
-                      },
-                      "username": {
-                        "maxLength": 64,
-                        "minLength": 1,
-                        "type": "string"
-                      }
-                    },
-                    "readOnly": true,
-                    "required": [
-                      "userId",
-                      "username",
-                      "createdAt",
-                      "updatedAt"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "firstPromptDismissed": {
-                "type": "boolean"
-              },
-              "identityVersion": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "status": {
-                "const": "available",
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "status",
-              "identityVersion",
-              "currentAccount",
-              "accountCount",
-              "firstPromptDismissed"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "reason": {
-                "enum": [
-                  "open-failed",
-                  "integrity-failed",
-                  "migration-failed"
-                ],
-                "type": "string"
-              },
-              "recoveryAvailable": {
-                "type": "boolean"
-              },
-              "status": {
-                "const": "unavailable",
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "status",
-              "reason",
-              "recoveryAvailable"
-            ],
-            "type": "object"
-          }
-        ]
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "state",
-      "accounts"
-    ],
-    "type": "object"
-  },
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "List Local Accounts"
-}
-```
-
-## `identity.local.rename-account`
-
-Changes a Local Account display name without changing its user ID.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `external-write`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "userId": {
-        "format": "uuid",
-        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-        "type": "string"
-      },
-      "username": {
-        "maxLength": 512,
-        "type": "string"
-      }
-    },
-    "required": [
-      "userId",
-      "username"
-    ],
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accountCount": {
-        "maximum": 1024,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "currentAccount": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "cloudIdentity": {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudUserId": {
-                    "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceId": {
-                    "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceStatus": {
-                    "enum": [
-                      "active",
-                      "revoked"
-                    ],
-                    "type": "string"
-                  },
-                  "issuer": {
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "type": "string"
-                  },
-                  "oidcIdentityId": {
-                    "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "subject": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "cloudUserId",
-                  "oidcIdentityId",
-                  "issuer",
-                  "subject"
-                ],
-                "type": "object"
-              },
-              "createdAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "updatedAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "userId": {
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                "type": "string"
-              },
-              "username": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "userId",
-              "username",
-              "createdAt",
-              "updatedAt"
-            ],
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "firstPromptDismissed": {
-        "type": "boolean"
-      },
-      "identityVersion": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "status": {
-        "const": "available",
-        "type": "string"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "status",
-      "identityVersion",
-      "currentAccount",
-      "accountCount",
-      "firstPromptDismissed"
-    ],
-    "type": "object"
-  },
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Rename Local Account"
-}
-```
-
-## `identity.local.select-account`
-
-Selects an existing display-only Local Account on this installation.
-
-- Version: `1.0.0`
-- Audiences: ui
-- Effect: `external-write`
-- Approval: none
-- Scope: global
-
-### Contract
-
-```json
-{
-  "concurrency": {
-    "idempotency": "required",
-    "revision": "none"
-  },
-  "contractVersion": 3,
-  "inputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "userId": {
-        "format": "uuid",
-        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-        "type": "string"
-      }
-    },
-    "required": [
-      "userId"
-    ],
-    "type": "object"
-  },
-  "outputSchema": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "additionalProperties": false,
-    "properties": {
-      "accountCount": {
-        "maximum": 1024,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "currentAccount": {
-        "anyOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "cloudIdentity": {
-                "additionalProperties": false,
-                "properties": {
-                  "cloudUserId": {
-                    "pattern": "^usr_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceId": {
-                    "pattern": "^dev_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "deviceStatus": {
-                    "enum": [
-                      "active",
-                      "revoked"
-                    ],
-                    "type": "string"
-                  },
-                  "issuer": {
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "type": "string"
-                  },
-                  "oidcIdentityId": {
-                    "pattern": "^oid_[A-Za-z0-9](?:[A-Za-z0-9_]{10,62}[A-Za-z0-9])$",
-                    "type": "string"
-                  },
-                  "subject": {
-                    "maxLength": 512,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "readOnly": true,
-                "required": [
-                  "cloudUserId",
-                  "oidcIdentityId",
-                  "issuer",
-                  "subject"
-                ],
-                "type": "object"
-              },
-              "createdAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "updatedAt": {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                "type": "string"
-              },
-              "userId": {
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                "type": "string"
-              },
-              "username": {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "readOnly": true,
-            "required": [
-              "userId",
-              "username",
-              "createdAt",
-              "updatedAt"
-            ],
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "firstPromptDismissed": {
-        "type": "boolean"
-      },
-      "identityVersion": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "status": {
-        "const": "available",
-        "type": "string"
-      }
-    },
-    "readOnly": true,
-    "required": [
-      "status",
-      "identityVersion",
-      "currentAccount",
-      "accountCount",
-      "firstPromptDismissed"
-    ],
-    "type": "object"
-  },
-  "principalTransition": "host-authority",
-  "resourceKinds": [],
-  "tags": [
-    "identity-access",
-    "local-account"
-  ],
-  "title": "Select Local Account"
 }
 ```
 

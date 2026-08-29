@@ -31,21 +31,16 @@ describe('Identity renderer entry', () => {
     })
   })
 
-  it('offers the optional first-run prompt through the same global overlay', async () => {
+  it('loads Cloud identity at startup without opening an account prompt', async () => {
     const toggleGlobalOverlay = vi.fn()
-    const entry = createDomainRendererEntry(rendererHost(toggleGlobalOverlay))
+    const host = rendererHost(toggleGlobalOverlay)
+    const entry = createDomainRendererEntry(host)
     const lifecycle = entry.contributions.find(({ kind }) => kind === 'renderer.lifecycle')!
       .value as { activate(): void | (() => void) }
 
     const dispose = lifecycle.activate()
-    await vi.waitFor(() => expect(toggleGlobalOverlay).toHaveBeenCalledWith({
-      contributionId: 'identity-access.account-overlay',
-      open: true,
-      activation: {
-        revision: 1,
-        payload: { mode: 'first-run' }
-      }
-    }))
+    await vi.waitFor(() => expect(host.capabilityInvoker.invoke).toHaveBeenCalled())
+    expect(toggleGlobalOverlay).not.toHaveBeenCalled()
     dispose?.()
   })
 })
@@ -75,18 +70,6 @@ function rendererHost(toggleGlobalOverlay = vi.fn()): DomainRendererHost {
       invoke: vi.fn(async (contract) => {
         if (contract.actionId === IDENTITY_CAPABILITY_IDS.cloudInspect) {
           return { snapshot: cloudSnapshot, resource: cloudResource } as never
-        }
-        if (contract.actionId === IDENTITY_CAPABILITY_IDS.listAccounts) {
-          return {
-            state: {
-              status: 'available',
-              identityVersion: 0,
-              currentAccount: null,
-              accountCount: 0,
-              firstPromptDismissed: false
-            },
-            accounts: []
-          } as never
         }
         throw new Error(`Unexpected action ${contract.actionId}`)
       })

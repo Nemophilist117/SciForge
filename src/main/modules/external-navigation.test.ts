@@ -10,9 +10,9 @@ import type {
 } from './host-resource-grants'
 
 const principalV1 = Object.freeze({
-  authority: 'sciforge.local-identity',
+  authority: 'sciforge-cloud',
   subject: 'person-1',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'installation-1',
   identityVersion: 1
 })

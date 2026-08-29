@@ -179,7 +179,10 @@ import {
   type CapabilityAgentToolSurface
 } from './capabilities/agent-tools'
 import { installElectronDomainNativeVisualSmoke } from './electron-domain-smoke'
-import { installProviderCredentialAcceptance } from './provider-credential-acceptance'
+import {
+  currentProviderCredentialAcceptancePrincipal,
+  installProviderCredentialAcceptance
+} from './provider-credential-acceptance'
 import { VisualSourceRegistry } from './runtime/agent-runtime/visual-source-registry'
 import {
   installCapabilityResourceContentProtocol,
@@ -1123,11 +1126,13 @@ app
     let principalContextForDomainServices: HostPrincipalContext | null = null
     let capabilityBrokerForDomainServices: CapabilityBroker | null = null
     let portableResourceReferences: PortableResourceReferenceService | null = null
+    const providerCredentialAcceptancePrincipal = currentProviderCredentialAcceptancePrincipal()
     const domainPackageStorage = createDomainPackageStorageFactory({
       userDataDir: app.getPath('userData'),
       encryption: createPlatformPackageEncryption({ safeStorage }),
       getExecutionNodeId: () => hostExecutionNodeId,
-      currentPrincipal: () => principalContextForDomainServices?.current(),
+      currentPrincipal: () => providerCredentialAcceptancePrincipal ??
+        principalContextForDomainServices?.current(),
       secretRedaction: managedSecretRedaction
     })
     const isPrincipalCurrentForDomainServices = (principal: Parameters<
@@ -1330,7 +1335,7 @@ app
     )
     installProviderCredentialAcceptance(
       domainPackageStorage,
-      () => principalContext.current()
+      () => providerCredentialAcceptancePrincipal ?? principalContext.current()
     )
     capabilityBrokerForDomainServices = capabilityBroker
     portableResourceReferences = createPortableResourceReferenceService(

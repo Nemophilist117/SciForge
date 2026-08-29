@@ -18,6 +18,11 @@ import {
 } from '@sciforge/domain-sdk/principal'
 import type { PortableResourceAuthorityResolver } from '@sciforge/domain-sdk/portable-resource-references'
 import { DomainExternalNavigationError } from '@sciforge/domain-sdk/external-navigation'
+import {
+  AUTHENTICATED_CLOUD_TRANSPORT_CONTRACT_VERSION,
+  AUTHENTICATED_CLOUD_TRANSPORT_SERVICE_ID,
+  type AuthenticatedCloudTransport
+} from '@sciforge/domain-identity-access/authenticated-cloud-transport'
 
 import {
   CONTENT_SPACE_ARTIFACT_REFERENCE_CODEC_CONTRIBUTION,
@@ -80,6 +85,7 @@ import {
   contentSpacePortableResourceStateSchema,
   contentSpaceProviderInstanceInputSchema,
   contentSpaceProviderInstanceListResultSchema,
+  contentSpaceProviderPrincipalSyncResultSchema,
   contentSpaceResolvePortalTargetInputSchema,
   contentSpaceSuccess,
   contentSpaceResultSchema,
@@ -152,6 +158,7 @@ import {
   createContentSpacePortableAuthorityResolver
 } from './portable-authority-resolver.js'
 import { ContentSpaceProviderCatalog } from './provider-catalog.js'
+import { ContentSpaceProviderPrincipalSyncOrchestrator } from './provider-principal-sync.js'
 import {
   ContentSpaceService,
   type ContentSpaceServiceCallContext,
@@ -252,6 +259,7 @@ export function createDomainMainEntry(
   host: DomainMainHost
 ): TrustedDomainProcessEntryInput<ContentSpaceMainContribution> {
   let runtime: ContentSpaceRuntime | undefined
+  let providerPrincipalSync: ContentSpaceProviderPrincipalSyncOrchestrator | undefined
   const getRuntime = (): ContentSpaceRuntime => {
     if (!runtime) {
       throw operationError('composition_not_ready', 'Content Space runtime is not activated.')
@@ -276,6 +284,7 @@ export function createDomainMainEntry(
         })
       })
       return () => {
+        providerPrincipalSync = undefined
         runtime = undefined
       }
     }
@@ -294,6 +303,24 @@ export function createDomainMainEntry(
             options: ContentSpaceCapabilityOptions
           ) => unknown,
           getService: () => getRuntime().service,
+          getProviderPrincipalSync: () => {
+            if (!providerPrincipalSync) {
+              if (!host.internalServices) {
+                throw operationError(
+                  'composition_not_ready',
+                  'Identity service composition is unavailable.'
+                )
+              }
+              providerPrincipalSync = new ContentSpaceProviderPrincipalSyncOrchestrator({
+                service: getRuntime().service,
+                transport: host.internalServices.acquire<AuthenticatedCloudTransport>(
+                  AUTHENTICATED_CLOUD_TRANSPORT_SERVICE_ID,
+                  AUTHENTICATED_CLOUD_TRANSPORT_CONTRACT_VERSION
+                )
+              })
+            }
+            return providerPrincipalSync
+          },
           portableResources: host.portableResources,
           fileTransfers: host.fileTransfers,
           externalNavigation: host.externalNavigation
@@ -354,6 +381,7 @@ export function createDomainMainEntry(
 function createContentSpaceCapabilityFactory<CapabilityDefinition>(options: Readonly<{
   defineCapability(options: ContentSpaceCapabilityOptions): CapabilityDefinition
   getService(): ContentSpaceService
+  getProviderPrincipalSync(): ContentSpaceProviderPrincipalSyncOrchestrator
   portableResources?: NonNullable<DomainMainHost['portableResources']>
   fileTransfers?: NonNullable<DomainMainHost['fileTransfers']>
   externalNavigation?: NonNullable<DomainMainHost['externalNavigation']>
@@ -927,6 +955,22 @@ function createContentSpaceCapabilityFactory<CapabilityDefinition>(options: Read
         outputSchema: contentSpaceProviderInstanceListResultSchema,
         handler: async (_input, context) => capabilityResult(() =>
           options.getService().listProviderInstances(call(context))
+        )
+      }),
+      define({
+        id: CONTENT_SPACE_CAPABILITY_IDS.syncProviderPrincipal,
+        audiences: ['ui'],
+        scope: 'global',
+        title: 'Sync Content Space Provider Principal',
+        description: 'Publishes the current provider-neutral Content Space directory binding to SciForge Cloud.',
+        effect: 'external-write',
+        approval: 'confirmation',
+        concurrency: { revision: 'none', idempotency: 'required' },
+        tags: ['provider', 'identity', 'sync'],
+        inputSchema: contentSpaceProviderInstanceInputSchema,
+        outputSchema: contentSpaceProviderPrincipalSyncResultSchema,
+        handler: async ({ providerInstanceRef }, context) => capabilityResult(() =>
+          options.getProviderPrincipalSync().sync(providerInstanceRef, writeCall(context))
         )
       }),
       define({

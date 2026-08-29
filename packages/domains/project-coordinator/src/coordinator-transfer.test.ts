@@ -33,7 +33,8 @@ test('Owner transfer derives every Cloud CAS fact from the exact fresh Owner Age
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: projectFixture.ownerUserId,
-      deviceId: TEST_IDS.deviceId
+      deviceId: TEST_IDS.deviceId,
+      deviceEntityRevision: 1
     }),
     execute: async ({ payload }) => {
       const command = payload as RestRequest

@@ -5,7 +5,10 @@ import {
   DomainMainProviderCredentialError,
   type DomainMainProviderCredentialAccess
 } from '@sciforge/domain-sdk/package-storage'
-import type { PrincipalSnapshot } from '@sciforge/domain-sdk/principal'
+import {
+  principalSnapshotSchema,
+  type PrincipalSnapshot
+} from '@sciforge/domain-sdk/principal'
 
 import type { DomainPackageStorageFactory } from './domain-package-storage'
 
@@ -17,6 +20,13 @@ const ACCEPTANCE_BINDING = Object.freeze({
   providerInstanceRef: 'provider-credential-acceptance',
   connectionId: 'provider-credential-acceptance-connection'
 })
+const ACCEPTANCE_PRINCIPAL = Object.freeze(principalSnapshotSchema.parse({
+  authority: 'sciforge-cloud',
+  subject: 'usr_ProviderCredentialAcceptance01',
+  assurance: 'cloud-authenticated',
+  deviceId: 'dev_ProviderCredentialAcceptance01',
+  identityVersion: 1
+}))
 
 export type ProviderCredentialAcceptancePhase =
   | 'store'
@@ -40,6 +50,12 @@ declare global {
   var __SCIFORGE_PROVIDER_CREDENTIAL_ACCEPTANCE__:
     | ProviderCredentialAcceptanceDriver
     | undefined
+}
+
+export function currentProviderCredentialAcceptancePrincipal(): PrincipalSnapshot | undefined {
+  return process.env.SCIFORGE_PROVIDER_CREDENTIAL_ACCEPTANCE === '1'
+    ? ACCEPTANCE_PRINCIPAL
+    : undefined
 }
 
 export function installProviderCredentialAcceptance(

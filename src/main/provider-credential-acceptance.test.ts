@@ -6,7 +6,10 @@ import type {
 import type { PrincipalSnapshot } from '@sciforge/domain-sdk/principal'
 
 import type { DomainPackageStorageFactory } from './domain-package-storage'
-import { installProviderCredentialAcceptance } from './provider-credential-acceptance'
+import {
+  currentProviderCredentialAcceptancePrincipal,
+  installProviderCredentialAcceptance
+} from './provider-credential-acceptance'
 
 vi.mock('electron', () => ({
   app: {
@@ -21,13 +24,26 @@ afterEach(() => {
 })
 
 describe('provider credential acceptance seam', () => {
+  it('exposes a canonical Cloud Principal only for the explicit smoke process', () => {
+    expect(currentProviderCredentialAcceptancePrincipal()).toBeUndefined()
+
+    process.env.SCIFORGE_PROVIDER_CREDENTIAL_ACCEPTANCE = '1'
+    expect(currentProviderCredentialAcceptancePrincipal()).toEqual({
+      authority: 'sciforge-cloud',
+      subject: 'usr_ProviderCredentialAcceptance01',
+      assurance: 'cloud-authenticated',
+      deviceId: 'dev_ProviderCredentialAcceptance01',
+      identityVersion: 1
+    })
+  })
+
   it('binds every phase operation to the exact Principal observed at phase start', async () => {
     process.env.SCIFORGE_PROVIDER_CREDENTIAL_ACCEPTANCE = '1'
     const principal: PrincipalSnapshot = Object.freeze({
-      authority: 'sciforge.local-account',
-      subject: 'acceptance-account',
-      assurance: 'local-selection',
-      deviceId: 'acceptance-device',
+      authority: 'sciforge-cloud',
+      subject: 'usr_AcceptanceUser01',
+      assurance: 'cloud-authenticated',
+      deviceId: 'dev_AcceptanceDevice01',
       identityVersion: 4
     })
     const accesses: DomainMainProviderCredentialAccess[] = []

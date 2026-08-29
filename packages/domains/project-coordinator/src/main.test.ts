@@ -98,7 +98,8 @@ test('main entry acquires Identity reads/signing and Collaboration Agent command
       state: 'ready',
       baseUrl: 'https://cloud-run0.sciforge.cn/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async () => {
       executeCalls += 1

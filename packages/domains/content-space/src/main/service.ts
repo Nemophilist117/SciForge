@@ -50,6 +50,7 @@ import {
   contentSpaceCapabilityListSchema,
   contentSpaceCapabilityStateListSchema,
   contentSpaceContainerPageSchema,
+  contentSpaceDirectoryUserReferenceSchema,
   contentSpaceEntryNameSchema,
   contentSpaceEntryObservationSchema,
   contentSpaceEntryPageSchema,
@@ -89,6 +90,9 @@ import {
 import {
   CONTENT_SPACE_EXTENDED_OPERATION_CONTRACTS,
   contentSpaceAgentExtendedRequestSchema,
+  contentSpaceGetCurrentPrincipalRequestSchema,
+  contentSpaceGetCurrentPrincipalResultSchema,
+  type ContentSpaceExtendedErrorCode,
   type ContentSpaceExtendedOperationKey
 } from '../extended-operations-contract.js'
 import {
@@ -175,6 +179,12 @@ export type ContentSpaceSystemTransferPreflightProbe = Readonly<{
    * evidence only: it is never accepted as transfer authority and is never cached.
    */
   providerObservationRevision: string
+}>
+
+export type ContentSpaceProviderPrincipalBindingObservation = Readonly<{
+  providerInstanceRef: string
+  binding: z.infer<typeof contentSpaceExternalBindingAttestationSchema>
+  directoryUser: z.infer<typeof contentSpaceDirectoryUserReferenceSchema>
 }>
 
 type ContentSpaceSystemTransferPreflightInput =
@@ -279,6 +289,104 @@ export class ContentSpaceService {
     )
     return parseOutput(contentSpaceCapabilityListSchema, {
       items: await this.#describe(provider, context, call)
+    })
+  }
+
+  async observeProviderPrincipalBinding(
+    providerInstanceRef: string,
+    call: ContentSpaceServiceFeatureCallContext
+  ): Promise<ContentSpaceProviderPrincipalBindingObservation> {
+    const parsedProviderInstanceRef = parseInput(providerInstanceRefSchema, providerInstanceRef)
+    let { provider, context } = await this.#featureInvocation(
+      parsedProviderInstanceRef,
+      'read',
+      call
+    )
+    const initialBinding = await this.#observeExternalBinding(
+      provider,
+      context,
+      call,
+      'The current Content Space Provider connection is not authorized.'
+    )
+    context = Object.freeze({ ...context, expectedExternalBinding: initialBinding })
+
+    const executor = provider.features?.extendedOperations
+    if (!executor) {
+      fail('blocked_by_contract', 'Provider directory observation is unavailable.')
+    }
+    const operationStates = parseOutput(
+      contentSpaceExtendedOperationStateListSchema,
+      await boundedProviderCall(
+        () => executor.describeOperations(context),
+        context.signal,
+        call.assertPrincipalCurrent
+      )
+    )
+    const operationState = operationStates.find(({ operation }) =>
+      operation === 'getCurrentPrincipal'
+    )
+    const admittedContext = operationState
+      ? await this.#admittedContext(provider, operationState, context, call)
+      : undefined
+    if (!admittedContext) {
+      fail('blocked_by_contract', 'Provider directory observation is unavailable.')
+    }
+    context = admittedContext
+    const request = parseInput(
+      contentSpaceGetCurrentPrincipalRequestSchema,
+      { providerInstanceRef: parsedProviderInstanceRef }
+    )
+    const result = parseOutput(
+      contentSpaceGetCurrentPrincipalResultSchema,
+      await boundedProviderCall(
+        () => executor.execute({
+          effect: 'read',
+          context,
+          target: Object.freeze({
+            kind: 'provider-administration' as const,
+            providerInstanceRef: parsedProviderInstanceRef
+          }),
+          operation: 'getCurrentPrincipal',
+          request
+        }),
+        context.signal,
+        call.assertPrincipalCurrent
+      )
+    )
+    if (!result.ok) {
+      fail(
+        contentSpaceErrorCodeFromExtended(result.error.code),
+        result.error.message,
+        result.error.retry
+      )
+    }
+    const directoryUser = contentSpaceDirectoryUserReferenceSchema.safeParse(
+      result.value.reference
+    )
+    if (!directoryUser.success ||
+      directoryUser.data.providerInstanceRef !== parsedProviderInstanceRef) {
+      fail(
+        'provider_contract_violation',
+        'Provider directory observation is not the current User for this Provider Instance.'
+      )
+    }
+    const finalBinding = await this.#observeExternalBinding(
+      provider,
+      context,
+      call,
+      'The Content Space Provider connection changed during directory observation.'
+    )
+    if (!sameExternalBindingAttestation(initialBinding, finalBinding)) {
+      fail(
+        'unauthorized',
+        'The Content Space Provider connection changed during directory observation.',
+        'after-human-action'
+      )
+    }
+    return Object.freeze({
+      providerInstanceRef: parsedProviderInstanceRef,
+      binding: finalBinding,
+      directoryUser: directoryUser.data
     })
   }
 
@@ -1506,6 +1614,28 @@ export class ContentSpaceService {
         signal: operationContext.signal
       })
     })
+  }
+
+  async #observeExternalBinding(
+    provider: ContentSpaceProvider,
+    context: ContentSpaceProviderOperationContext,
+    call: ContentSpaceServiceCallContext,
+    unavailableMessage: string
+  ): Promise<z.infer<typeof contentSpaceExternalBindingAttestationSchema>> {
+    const rawBinding = await boundedProviderCall(
+      () => provider.attestExternalBinding(context),
+      context.signal,
+      call.assertPrincipalCurrent
+    )
+    if (rawBinding === undefined) {
+      fail('unauthorized', unavailableMessage, 'after-human-action')
+    }
+    const binding = parseOutput(contentSpaceExternalBindingAttestationSchema, rawBinding)
+    if (binding.providerInstanceRef !== context.providerInstanceRef ||
+      !samePrincipalSnapshot(binding.principal, context.principal)) {
+      fail('unauthorized', unavailableMessage, 'after-human-action')
+    }
+    return binding
   }
 
   async #prepareNativeDocumentTransfer(
@@ -3162,6 +3292,31 @@ function sameExternalBindingAttestation(
     samePrincipalSnapshot(left.principal, right.principal) &&
     left.externalSubject === right.externalSubject &&
     left.bindingRevision === right.bindingRevision
+}
+
+function contentSpaceErrorCodeFromExtended(
+  code: ContentSpaceExtendedErrorCode
+): ContentSpaceErrorCode {
+  switch (code) {
+    case 'invalid_input': return 'invalid_input'
+    case 'invalid_reference': return 'invalid_reference'
+    case 'invalid_target': return 'invalid_target'
+    case 'already_exists':
+    case 'conflict': return 'conflict'
+    case 'unauthorized': return 'unauthorized'
+    case 'blocked_by_contract':
+    case 'precondition_failed':
+    case 'unsupported': return 'blocked_by_contract'
+    case 'not_found':
+    case 'provider_unavailable': return 'provider_unavailable'
+    case 'rate_limited': return 'rate_limited'
+    case 'provider_contract_violation': return 'provider_contract_violation'
+    case 'bounds_exceeded': return 'bounds_exceeded'
+    case 'outcome_unknown': return 'outcome_unknown'
+    case 'cancelled': return 'cancelled'
+    case 'source_unavailable': return 'source_unavailable'
+    case 'destination_unavailable': return 'destination_unavailable'
+  }
 }
 
 function systemTransferPreflightProbe(input: Readonly<{

@@ -91,10 +91,10 @@ describe('package-owned storage contracts', () => {
       connectionId: 'connection-a'
     }), z.ZodError)
     const expectedPrincipal = {
-      authority: 'sciforge.local-account',
-      subject: 'local-account-a',
-      assurance: 'local-selection',
-      deviceId: 'test-device',
+      authority: 'sciforge-cloud',
+      subject: 'usr_CloudUser000001',
+      assurance: 'cloud-authenticated',
+      deviceId: 'dev_CloudDevice0001',
       identityVersion: 7
     } as const
     assert.deepEqual(domainMainProviderCredentialAccessSchema.parse({
@@ -115,7 +115,7 @@ describe('package-owned storage contracts', () => {
         providerInstanceRef: 'opencontent.demo',
         connectionId: 'connection-a'
       },
-      acceptedPrincipalAssurances: ['local-selection']
+      acceptedPrincipalAssurances: ['cloud-authenticated']
     }), z.ZodError)
   })
 })

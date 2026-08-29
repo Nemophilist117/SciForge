@@ -195,6 +195,11 @@ describe('DesktopDeviceService', () => {
       status: 'active',
       platform: { os: 'windows', arch: 'x64' }
     })
+    expect(service.getActiveDeviceAuthority()).toEqual({
+      deviceId: 'dev_CloudDevice0001',
+      userId,
+      revision: 1
+    })
     expect(vault.write).toHaveBeenCalledOnce()
 
     const createInput = createDevice.mock.calls[0]?.[1]
@@ -254,6 +259,7 @@ describe('DesktopDeviceService', () => {
     expect(revoked.ok).toBe(true)
     expect(revoked.status).toMatchObject({ state: 'revoked' })
     expect(revoked.devices[0]?.status).toBe('revoked')
+    expect(service.getActiveDeviceAuthority()).toBeNull()
     await expect(service.signDeviceFactAttestation({
       purpose: 'project-content-provisioning-attestation',
       factDigest,

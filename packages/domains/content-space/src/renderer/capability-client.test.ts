@@ -8,7 +8,10 @@ import {
   CONTENT_SPACE_CAPABILITY_IDS,
   type ContentFileReference
 } from '../contract.js'
-import { createContentSpaceCapabilityClient } from './capability-client.js'
+import {
+  contentSpaceCapabilityContracts,
+  createContentSpaceCapabilityClient
+} from './capability-client.js'
 
 const fileReference: ContentFileReference = Object.freeze({
   providerInstanceRef: 'mock.instance.one',
@@ -16,6 +19,42 @@ const fileReference: ContentFileReference = Object.freeze({
 })
 
 describe('Content Space renderer capability client', () => {
+  it('syncs only the selected Provider reference through an approved external write', async () => {
+    const signal = new AbortController().signal
+    const approval = Object.freeze({ mode: 'confirmation' as const })
+    const receipt = Object.freeze({
+      ok: true as const,
+      value: Object.freeze({
+        providerInstanceRef: 'mock.instance.one',
+        status: 'synchronized' as const
+      })
+    })
+    const invoke = vi.fn(async () => receipt)
+    const client = createContentSpaceCapabilityClient({
+      invoke,
+      observe: vi.fn()
+    } as unknown as DomainRendererCapabilityInvoker)
+
+    await expect(client.syncProviderPrincipal('mock.instance.one', {
+      approval,
+      signal
+    })).resolves.toEqual(receipt)
+
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: CONTENT_SPACE_CAPABILITY_IDS.syncProviderPrincipal,
+        effect: 'external-write'
+      }),
+      { providerInstanceRef: 'mock.instance.one' },
+      { approval, signal }
+    )
+    expect(contentSpaceCapabilityContracts.syncProviderPrincipal.inputSchema.safeParse({
+      providerInstanceRef: 'mock.instance.one',
+      userId: 'must-not-cross-the-renderer-boundary'
+    }).success).toBe(false)
+    expect(JSON.stringify(invoke.mock.calls)).not.toMatch(/userId|deviceId|factId|revision/u)
+  })
+
   it('opens a Provider portal only through the resolved opaque handle and approval boundary', async () => {
     const signal = new AbortController().signal
     const approval = Object.freeze({ mode: 'confirmation' as const })

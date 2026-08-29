@@ -28,15 +28,7 @@ import {
   cloudIdentityInspectOutputSchema,
   cloudIdentityObservationContract,
   cloudIdentitySnapshotSchema,
-  accountRenameInputSchema,
-  accountSelectionInputSchema,
-  emptyIdentityInputSchema,
-  identityAvailableStateSchema,
-  identityBackupAndResetInputSchema,
-  identityBackupAndResetOutputSchema,
-  identityListAccountsOutputSchema,
-  identityUiStateSchema,
-  usernameInputSchema
+  emptyIdentityInputSchema
 } from '../contract.js'
 import {
   IDENTITY_ACCESS_DOMAIN_MODULE_ID,
@@ -59,9 +51,9 @@ import { createIdentityAgentCloudRuntime } from './agent-cloud-runtime.js'
 import { cloudInstallationId } from './device-service.js'
 import { createPlatformIdentityPrivateVault } from './private-vault.js'
 
-export { LocalCloudIdentityLinkService } from './cloud-link-service.js'
+export { CloudPrincipalStateService } from './cloud-principal-state.js'
 
-type IdentityCapabilityEffect = 'read' | 'external-write' | 'destructive'
+type IdentityCapabilityEffect = 'read' | 'external-write'
 type IdentityCloudCapabilityRuntime = Readonly<{
   snapshot: () => unknown
   semanticRevision: () => string
@@ -150,7 +142,8 @@ const authenticatedCloudTransportDescriptor = defineDomainMainInternalServiceDes
   contractVersion: AUTHENTICATED_CLOUD_TRANSPORT_CONTRACT_VERSION,
   allowedConsumerModuleIds: [
     'sciforge.collaboration',
-    'sciforge.project-coordinator'
+    'sciforge.project-coordinator',
+    'sciforge.content-space'
   ]
 })
 
@@ -176,10 +169,7 @@ export function createDomainMainEntry(
   }
   let service: IdentityService | undefined
   const getService = (): IdentityService => {
-    service ??= new IdentityService(
-      host.getUserDataDir(),
-      requireDeviceId(host)
-    )
+    service ??= new IdentityService(host.getUserDataDir())
     return service
   }
   const principalProvider: DomainMainPrincipalProvider = Object.freeze({
@@ -286,10 +276,10 @@ export function createDomainMainEntry(
       }
     }
   })
-  let localDisposed = false
-  const disposeLocal = (): void => {
-    if (localDisposed) return
-    localDisposed = true
+  let principalDisposed = false
+  const disposePrincipal = (): void => {
+    if (principalDisposed) return
+    principalDisposed = true
     service?.close()
     service = undefined
   }
@@ -315,15 +305,14 @@ export function createDomainMainEntry(
           defineCapability: host.defineCapability as (
             options: IdentityCapabilityOptions
           ) => unknown,
-          getService,
           getCloudRuntime
         }),
-        onDispose: disposeLocal
+        onDispose: disposePrincipal
       },
       {
         ...IDENTITY_PRINCIPAL_PROVIDER_CONTRIBUTION,
         value: principalProvider,
-        onDispose: disposeLocal
+        onDispose: disposePrincipal
       },
       {
         ...IDENTITY_RUNTIME_LIFECYCLE_CONTRIBUTION,
@@ -351,46 +340,8 @@ export function createDomainMainEntry(
 
 export function createIdentityCapabilityFactory<CapabilityDefinition>(options: Readonly<{
   defineCapability: (options: IdentityCapabilityOptions) => CapabilityDefinition
-  getService: () => IdentityService
   getCloudRuntime: () => IdentityCloudCapabilityRuntime
 }>): IdentityCapabilityFactory<CapabilityDefinition> {
-  const define = (
-    input: Omit<IdentityCapabilityOptions, 'version' | 'audiences' | 'scope' | 'tags'>
-  ): CapabilityDefinition => options.defineCapability({
-    ...input,
-    version: '1.0.0',
-    audiences: ['ui'],
-    scope: 'global',
-    tags: ['identity-access', 'local-account']
-  })
-
-  const read = (
-    context: IdentityCapabilityContext,
-    operation: () => unknown
-  ): Readonly<{ output: unknown }> => {
-    requireHumanUi(context)
-    return { output: operation() }
-  }
-  const mutate = (
-    context: IdentityCapabilityContext,
-    operation: () => unknown
-  ): Readonly<{ output: unknown }> => {
-    requireHumanUi(context)
-    return { output: operation() }
-  }
-  const transition = (
-    context: IdentityCapabilityContext,
-    operation: () => unknown
-  ): Readonly<{ output: unknown }> => {
-    requireHumanUi(context)
-    const output = operation()
-    try {
-      context.assertPrincipalCurrent()
-    } catch (error) {
-      if (!isPrincipalChangedError(error)) throw error
-    }
-    return { output }
-  }
   const observeCloud = async () => {
     const runtime = options.getCloudRuntime()
     const state = cloudIdentitySnapshotSchema.parse(runtime.snapshot())
@@ -433,113 +384,6 @@ export function createIdentityCapabilityFactory<CapabilityDefinition>(options: R
       allowedDirectTransports: Object.freeze([]) as readonly []
     }),
     createDefinitions: () => [
-      define({
-        id: IDENTITY_CAPABILITY_IDS.inspect,
-        title: 'Inspect Local Identity',
-        description: 'Reads the current installation-local account selection state.',
-        effect: 'read',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'none' },
-        inputSchema: emptyIdentityInputSchema,
-        outputSchema: identityUiStateSchema,
-        handler: (_input, context) => read(context, () => options.getService().inspect())
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.listAccounts,
-        title: 'List Local Accounts',
-        description: 'Lists display-only Local Accounts stored in this installation.',
-        effect: 'read',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'none' },
-        inputSchema: emptyIdentityInputSchema,
-        outputSchema: identityListAccountsOutputSchema,
-        handler: (_input, context) => read(context, () => options.getService().listAccounts())
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.createAccount,
-        title: 'Create Local Account',
-        description: 'Creates and selects a display-only Local Account on this installation.',
-        effect: 'external-write',
-        principalTransition: 'host-authority',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: usernameInputSchema,
-        outputSchema: identityAvailableStateSchema,
-        handler: (input, context) => transition(
-          context,
-          () => options.getService().createAccount(input.username)
-        )
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.selectAccount,
-        title: 'Select Local Account',
-        description: 'Selects an existing display-only Local Account on this installation.',
-        effect: 'external-write',
-        principalTransition: 'host-authority',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: accountSelectionInputSchema,
-        outputSchema: identityAvailableStateSchema,
-        handler: (input, context) => transition(
-          context,
-          () => options.getService().selectAccount(input.userId)
-        )
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.renameAccount,
-        title: 'Rename Local Account',
-        description: 'Changes a Local Account display name without changing its user ID.',
-        effect: 'external-write',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: accountRenameInputSchema,
-        outputSchema: identityAvailableStateSchema,
-        handler: (input, context) => mutate(
-          context,
-          () => options.getService().renameAccount(input.userId, input.username)
-        )
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.exitAccount,
-        title: 'Exit Local Account',
-        description: 'Clears Local Account selection without changing installation-local data.',
-        effect: 'external-write',
-        principalTransition: 'host-authority',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: emptyIdentityInputSchema,
-        outputSchema: identityAvailableStateSchema,
-        handler: (_input, context) => transition(context, () => options.getService().exitAccount())
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.dismissFirstPrompt,
-        title: 'Dismiss Local Account Prompt',
-        description: 'Persists dismissal of the optional Local Account first-run prompt.',
-        effect: 'external-write',
-        approval: 'none',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: emptyIdentityInputSchema,
-        outputSchema: identityAvailableStateSchema,
-        handler: (_input, context) => mutate(
-          context,
-          () => options.getService().dismissFirstPrompt()
-        )
-      }),
-      define({
-        id: IDENTITY_CAPABILITY_IDS.backupAndReset,
-        title: 'Back Up and Reset Local Identity',
-        description: 'Backs up an unavailable Identity database before establishing a fresh one.',
-        effect: 'destructive',
-        principalTransition: 'host-authority',
-        approval: 'confirmation',
-        concurrency: { revision: 'none', idempotency: 'required' },
-        inputSchema: identityBackupAndResetInputSchema,
-        outputSchema: identityBackupAndResetOutputSchema,
-        handler: (input, context) => transition(
-          context,
-          () => options.getService().backupAndReset(input.secondConfirmation)
-        )
-      }),
       options.defineCapability({
         id: IDENTITY_CAPABILITY_IDS.cloudInspect,
         version: '1.0.0',
@@ -660,7 +504,7 @@ function cloudMutationDefinitions<CapabilityDefinition>(
 
 function requireHumanUi(context: IdentityCapabilityContext): void {
   if (context.caller.audience !== 'ui') {
-    throw new Error('Local Account operations require trusted Human UI.')
+    throw new Error('Cloud identity operations require trusted Human UI.')
   }
 }
 

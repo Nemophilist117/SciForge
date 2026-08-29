@@ -30,10 +30,7 @@ export const principalIdentityVersionSchema = z.number()
   .nonnegative()
   .max(Number.MAX_SAFE_INTEGER)
 
-export const principalAssuranceSchema = z.enum([
-  'local-selection',
-  'cloud-authenticated'
-])
+export const principalAssuranceSchema = z.literal('cloud-authenticated')
 
 /**
  * Host-captured identity attribution. Authority and subject are separate so a

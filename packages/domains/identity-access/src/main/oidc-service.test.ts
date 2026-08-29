@@ -702,7 +702,6 @@ describe('DesktopIdentityService', () => {
       clientId,
       refreshToken: 'refresh-token-before-logout'
     })
-    const linkAuthenticatedUser = vi.fn()
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/.well-known/openid-configuration')) {
@@ -726,7 +725,6 @@ describe('DesktopIdentityService', () => {
       identityClient,
       sessionStore,
       fetchImpl,
-      linkAuthenticatedUser,
       openExternal: vi.fn()
     })
 
@@ -748,7 +746,6 @@ describe('DesktopIdentityService', () => {
     expect(service.getStatus()).toEqual({ state: 'signed-out' })
     expect(sessionStore.clear).toHaveBeenCalledOnce()
     expect(sessionStore.save).not.toHaveBeenCalled()
-    expect(linkAuthenticatedUser).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
     service.close()
   })
@@ -763,7 +760,6 @@ describe('DesktopIdentityService', () => {
       clientId,
       refreshToken: 'refresh-token-before-close'
     })
-    const linkAuthenticatedUser = vi.fn()
     const listener = vi.fn()
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
@@ -788,7 +784,6 @@ describe('DesktopIdentityService', () => {
       identityClient,
       sessionStore,
       fetchImpl,
-      linkAuthenticatedUser,
       openExternal: vi.fn()
     })
     service.subscribe(listener)
@@ -806,7 +801,6 @@ describe('DesktopIdentityService', () => {
       status: { state: 'signed-out' }
     })
     expect(sessionStore.save).not.toHaveBeenCalled()
-    expect(linkAuthenticatedUser).not.toHaveBeenCalled()
     expect(listener).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -819,7 +813,6 @@ describe('DesktopIdentityService', () => {
       const tokenResponse = deferred<Response>()
       const tokenExchangeStarted = deferred<void>()
       const sessionStore = memorySessionStore()
-      const linkAuthenticatedUser = vi.fn()
       const fetchImpl = vi.fn(async (input: string | URL | Request) => {
         const url = String(input)
         if (url.endsWith('/.well-known/openid-configuration')) {
@@ -844,7 +837,6 @@ describe('DesktopIdentityService', () => {
         sessionStore,
         redirectUri,
         fetchImpl,
-        linkAuthenticatedUser,
         openExternal: async (url) => {
           const authorizationUrl = new URL(url)
           const state = authorizationUrl.searchParams.get('state')
@@ -868,7 +860,6 @@ describe('DesktopIdentityService', () => {
       })
       expect(service.getStatus()).toEqual({ state: 'signed-out' })
       expect(sessionStore.save).not.toHaveBeenCalled()
-      expect(linkAuthenticatedUser).not.toHaveBeenCalled()
       if (action === 'logout') expect(sessionStore.clear).toHaveBeenCalledOnce()
       if (action === 'logout') service.close()
     }
@@ -879,7 +870,6 @@ describe('DesktopIdentityService', () => {
     const sessionStore = memorySessionStore()
     sessionStore.load.mockImplementationOnce(() => storedSession.promise)
     const fetchImpl = vi.fn() as unknown as typeof fetch
-    const linkAuthenticatedUser = vi.fn()
     const service = new DesktopIdentityService({
       issuer,
       clientId,
@@ -887,7 +877,6 @@ describe('DesktopIdentityService', () => {
       identityClient,
       sessionStore,
       fetchImpl,
-      linkAuthenticatedUser,
       openExternal: vi.fn()
     })
 
@@ -907,7 +896,6 @@ describe('DesktopIdentityService', () => {
     })
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(sessionStore.save).not.toHaveBeenCalled()
-    expect(linkAuthenticatedUser).not.toHaveBeenCalled()
   })
 
   it('rejects a provider that cannot be reached without opening a browser', async () => {

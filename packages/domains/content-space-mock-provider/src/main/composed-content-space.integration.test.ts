@@ -29,9 +29,9 @@ import { createDomainMainEntry as createMockMainEntry } from './index.js'
 const uploadHandle = `xfer_${'u'.repeat(32)}`
 const downloadHandle = `xfer_${'d'.repeat(32)}`
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'content-space-composed-test-device',
   identityVersion: 1
 })

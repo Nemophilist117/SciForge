@@ -108,9 +108,9 @@ describe('OpenContent Content Space Provider factory', () => {
     }) as ContentSpaceProvider
     const binding = await provider.features?.administration?.bind({
       principal: Object.freeze({
-        authority: 'sciforge.identity-access',
+        authority: 'sciforge-cloud',
         subject: 'content-owner',
-        assurance: 'local-selection',
+        assurance: 'cloud-authenticated',
         deviceId: 'test-device',
         identityVersion: 1
       }),

@@ -44,9 +44,9 @@ import {
 const OPENCONTENT_PROVIDER_INSTANCE_REF = 'opencontent-edoc2-demo'
 
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
-  subject: 'local-account-a',
-  assurance: 'local-selection' as const,
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser00001',
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'opencontent-supplier-transport-test',
   identityVersion: 1
 })

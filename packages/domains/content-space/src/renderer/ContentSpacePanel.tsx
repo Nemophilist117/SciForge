@@ -20,6 +20,7 @@ import {
   Info,
   Library,
   LoaderCircle,
+  RefreshCw,
   Upload,
   UserRound,
   UsersRound,
@@ -770,6 +771,20 @@ export function ContentSpacePanel({
       isContentSpaceInitialResource(initialResource) ? initialResource : undefined
     )
   }
+  const syncProviderPrincipal = () => {
+    if (!providerInstanceRef || busy) return
+    if (selectedEnrollmentView && selectedAccessState?.status !== 'ready') return
+    void runMutation(
+      'Syncing provider identity…',
+      (signal) => client.syncProviderPrincipal(providerInstanceRef, {
+        approval: { mode: 'confirmation' },
+        signal
+      }),
+      () => {
+        setStatus('Provider identity synchronized.')
+      }
+    )
+  }
 
   const selectedArtifact = selectedFile ? exactArtifactFor(artifact, selectedFile) : undefined
   const displayedCapabilities = selectedFile ? fileCapabilities : navigationCapabilities
@@ -826,6 +841,20 @@ export function ContentSpacePanel({
                   ? providerAccessLabel(selectedAccessState)
                   : 'Source selected'
                 : 'Choose a source'}</span>
+              {providerInstanceRef ? (
+                <button
+                  type="button"
+                  onClick={syncProviderPrincipal}
+                  disabled={busy || Boolean(
+                    selectedEnrollmentView && selectedAccessState?.status !== 'ready'
+                  )}
+                  className="content-space-inline-sync"
+                  title="Sync provider identity"
+                >
+                  <RefreshCw size={12} strokeWidth={1.9} aria-hidden />
+                  Sync
+                </button>
+              ) : null}
               {embedded && busy ? (
                 <button
                   type="button"

@@ -32,9 +32,9 @@ const FILE_ID = 'file-one'
 const REAL_VERSION = 'version-real'
 const REAL_DIGEST = Object.freeze({ algorithm: 'sha256' as const, value: 'a'.repeat(64) })
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'portable-resolver-test-device',
   identityVersion: 1
 })

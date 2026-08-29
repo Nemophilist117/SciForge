@@ -54,9 +54,9 @@ async function fixture(
 }
 
 const principalA: PrincipalSnapshot = {
-  authority: 'sciforge.local-account',
-  subject: 'local-account-a',
-  assurance: 'local-selection',
+  authority: 'sciforge-cloud',
+  subject: 'cloud-user-a',
+  assurance: 'cloud-authenticated',
   deviceId: 'test-device',
   identityVersion: 1
 }
@@ -160,7 +160,7 @@ describe('domain package storage', () => {
 
     const principalB: PrincipalSnapshot = {
       ...currentPrincipal,
-      subject: 'local-account-b',
+      subject: 'cloud-user-b',
       identityVersion: 2
     }
     currentPrincipal = principalB
@@ -175,7 +175,7 @@ describe('domain package storage', () => {
 
     const renewedPrincipalA: PrincipalSnapshot = {
       ...currentPrincipal,
-      subject: 'local-account-a',
+      subject: 'cloud-user-a',
       identityVersion: 3
     }
     currentPrincipal = renewedPrincipalA
@@ -275,7 +275,7 @@ describe('domain package storage', () => {
     const queuedReplace = credentials.replace(accessA, 'must-not-bind-to-principal-b')
     const principalB = Object.freeze({
       ...principalA,
-      subject: 'local-account-b',
+      subject: 'cloud-user-b',
       identityVersion: 2
     })
     currentPrincipal = principalB
@@ -342,7 +342,11 @@ describe('domain package storage', () => {
     current = principalA
     await expect(credentials.status({
       ...accessA,
-      expectedPrincipal: { ...principalA, assurance: 'cloud-authenticated' }
+      expectedPrincipal: {
+        ...principalA,
+        subject: 'cloud-user-b',
+        identityVersion: principalA.identityVersion + 1
+      }
     })).rejects.toMatchObject({ code: 'credential_binding_mismatch' })
   })
 
@@ -361,7 +365,7 @@ describe('domain package storage', () => {
       ...accessA,
       binding: { ...accessA.binding, connectionId: 'connection-b' }
     })).resolves.toEqual({ state: 'absent' })
-    current = { ...principalA, subject: 'local-account-b', identityVersion: 2 }
+    current = { ...principalA, subject: 'cloud-user-b', identityVersion: 2 }
     await expect(credentials.status({
       ...accessA,
       expectedPrincipal: current

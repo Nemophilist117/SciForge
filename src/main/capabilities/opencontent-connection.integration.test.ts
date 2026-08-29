@@ -32,23 +32,27 @@ const PASSWORD_CANARY = 'password-canary-must-not-be-retained'
 const SESSION_TOKEN_CANARY = 'session-token-canary-only-for-encrypted-host-storage'
 
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
-  subject: 'opencontent-integration-user',
-  assurance: 'local-selection' as const,
-  deviceId: 'opencontent-integration-device',
+  authority: 'sciforge-cloud',
+  subject: 'usr_OpenContentIntegration01',
+  assurance: 'cloud-authenticated' as const,
+  deviceId: 'dev_OpenContentIntegration01',
   identityVersion: 7
 })
 const otherPrincipal = Object.freeze({
   ...principal,
-  subject: 'opencontent-other-integration-user',
+  subject: 'usr_OpenContentIntegration02',
   identityVersion: 8
 })
 const cloudPrincipal = Object.freeze({
   authority: 'sciforge-cloud',
-  subject: 'opencontent-cloud-integration-user',
+  subject: 'usr_OpenContentIntegration03',
   assurance: 'cloud-authenticated' as const,
-  deviceId: 'opencontent-cloud-device',
+  deviceId: 'dev_OpenContentIntegration03',
   identityVersion: 9
+})
+const restoredCloudPrincipal = Object.freeze({
+  ...cloudPrincipal,
+  identityVersion: cloudPrincipal.identityVersion + 1
 })
 
 const caller: CapabilityCallerContextInput = Object.freeze({
@@ -257,6 +261,69 @@ describe('OpenContent connection through the Host capability Broker', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(6)
   })
 
+  it('locks the Provider while signed out, silently revalidates the same Cloud binding, and disconnects it independently', async () => {
+    const fetchImplementation = enrollmentFetch()
+    vi.stubGlobal('fetch', fetchImplementation)
+    const harness = createCloudHostStorageHarness()
+
+    await harness.broker.invoke(caller, {
+      actionId: OPENCONTENT_CONNECTION_CAPABILITY_IDS.bind,
+      invocationId: 'opencontent-cloud-lifecycle-bind',
+      input: {
+        providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF,
+        account: ACCOUNT_CANARY,
+        password: PASSWORD_CANARY
+      }
+    })
+    expect(fetchImplementation).toHaveBeenCalledTimes(4)
+
+    harness.setCurrentPrincipal(undefined)
+    await expect(harness.broker.invoke(caller, {
+      actionId: OPENCONTENT_CONNECTION_CAPABILITY_IDS.status,
+      input: { providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF }
+    })).rejects.toMatchObject({ code: 'handler_failed' })
+    expect(fetchImplementation).toHaveBeenCalledTimes(4)
+
+    harness.setCurrentPrincipal(restoredCloudPrincipal)
+    const restored = await harness.broker.invoke(caller, {
+      actionId: OPENCONTENT_CONNECTION_CAPABILITY_IDS.status,
+      input: { providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF }
+    })
+    expect(restored.output).toMatchObject({
+      outcome: 'success',
+      status: {
+        state: 'connected',
+        providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF
+      }
+    })
+    expect(fetchImplementation).toHaveBeenCalledTimes(6)
+    expect(fetchImplementation.mock.calls.filter(([rawUrl]) =>
+      new URL(typeof rawUrl === 'string' ? rawUrl : rawUrl.toString()).pathname ===
+        '/flatsdk/api/services/Auth/UserLogin'
+    )).toHaveLength(1)
+
+    const disconnected = await harness.broker.invoke(caller, {
+      actionId: OPENCONTENT_CONNECTION_CAPABILITY_IDS.unbind,
+      invocationId: 'opencontent-cloud-lifecycle-unbind',
+      input: { providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF }
+    })
+    expect(disconnected.output).toEqual({
+      outcome: 'success',
+      state: 'disconnected',
+      remoteRevocation: 'unsupported'
+    })
+    await expect(harness.broker.invoke(caller, {
+      actionId: OPENCONTENT_CONNECTION_CAPABILITY_IDS.status,
+      input: { providerInstanceRef: OPENCONTENT_PROVIDER_INSTANCE_REF }
+    })).resolves.toMatchObject({
+      output: {
+        outcome: 'success',
+        status: { state: 'disconnected' }
+      }
+    })
+    expect(fetchImplementation).toHaveBeenCalledTimes(6)
+  })
+
   it('returns a bounded secret-free conflict while another sensitive enrollment is active', async () => {
     const enrollmentStarted = deferred<void>()
     const releaseEnrollment = deferred<void>()
@@ -432,6 +499,8 @@ function createHarness() {
 }
 
 function createCloudHostStorageHarness() {
+  let currentPrincipal: typeof cloudPrincipal | typeof restoredCloudPrincipal | undefined =
+    cloudPrincipal
   const userDataDir = mkdtempSync(join(tmpdir(), 'sciforge-opencontent-cloud-storage-'))
   temporaryUserDataDirectories.push(userDataDir)
   const storage = createDomainPackageStorageFactory({
@@ -442,7 +511,7 @@ function createCloudHostStorageHarness() {
       decryptString: (value: Buffer) => value.toString('utf8')
     }),
     getExecutionNodeId: () => 'opencontent-host-installation',
-    currentPrincipal: () => cloudPrincipal
+    currentPrincipal: () => currentPrincipal
   }).forOwner({
     moduleId: '@sciforge/domain-opencontent-connector',
     moduleVersion: '4.0.4'
@@ -473,8 +542,13 @@ function createCloudHostStorageHarness() {
   const registry = new CapabilityRegistry(factory.createDefinitions())
   return Object.freeze({
     broker: new CapabilityBroker(registry, {
-      resolveCurrentPrincipal: () => cloudPrincipal
-    })
+      resolveCurrentPrincipal: () => currentPrincipal ?? null
+    }),
+    setCurrentPrincipal: (
+      next: typeof cloudPrincipal | typeof restoredCloudPrincipal | undefined
+    ) => {
+      currentPrincipal = next
+    }
   })
 }
 

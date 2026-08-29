@@ -227,7 +227,7 @@ describe('Content Space public contract', () => {
     const execution = {
       callerId: 'sciforge.collaboration:worker-runtime',
       principal: {
-        authority: 'sciforge.identity-access',
+        authority: 'sciforge-cloud',
         subject: 'user-a',
         assurance: 'cloud-authenticated' as const,
         deviceId: 'device-a',
@@ -378,9 +378,9 @@ describe('Content Space public contract', () => {
     }
 
     const principal = {
-      authority: 'sciforge.identity-access',
+      authority: 'sciforge-cloud',
       subject: 'principal-a',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'device-a',
       identityVersion: 1
     }
@@ -501,9 +501,9 @@ describe('Content Space public contract', () => {
     const attestation = {
       providerInstanceRef: 'provider-instance-a',
       principal: {
-        authority: 'sciforge.identity-access',
+        authority: 'sciforge-cloud',
         subject: 'principal-a',
-        assurance: 'local-selection',
+        assurance: 'cloud-authenticated',
         deviceId: 'device-a',
         identityVersion: 1
       },

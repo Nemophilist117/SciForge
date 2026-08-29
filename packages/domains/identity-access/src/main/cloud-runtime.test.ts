@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { LocalCloudIdentityLinkService } from './cloud-link-service.js'
+import { CloudPrincipalStateService } from './cloud-principal-state.js'
 import { resolveDesktopIdentityRuntimeConfig } from './cloud-runtime-config.js'
 import { CloudIdentityRuntime } from './cloud-runtime.js'
 import { DesktopDeviceService } from './device-service.js'
@@ -106,7 +106,7 @@ describe('CloudIdentityRuntime', () => {
     try {
       const initialized = await runtime.initialize()
       expect(initialized.error).toMatchObject({ source: 'runtime' })
-      expect(initialized.error?.message).toContain('Local cloud identity storage is unavailable')
+      expect(initialized.error?.message).toContain('Cloud Principal state is unavailable')
 
       const afterLogout = await runtime.logout()
       expect(afterLogout.identity.state).toBe('signed-out')
@@ -187,7 +187,7 @@ describe('CloudIdentityRuntime', () => {
   it('closes every constructed owner exactly once when runtime subscription fails', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sciforge-cloud-runtime-'))
     roots.push(root)
-    const closeLinks = vi.spyOn(LocalCloudIdentityLinkService.prototype, 'close')
+    const closePrincipalState = vi.spyOn(CloudPrincipalStateService.prototype, 'close')
     const closeIdentity = vi.spyOn(DesktopIdentityService.prototype, 'close')
     const closeDevice = vi.spyOn(DesktopDeviceService.prototype, 'close')
     vi.spyOn(DesktopDeviceService.prototype, 'subscribe').mockImplementationOnce(() => {
@@ -205,7 +205,7 @@ describe('CloudIdentityRuntime', () => {
 
     expect(closeDevice).toHaveBeenCalledOnce()
     expect(closeIdentity).toHaveBeenCalledOnce()
-    expect(closeLinks).toHaveBeenCalledOnce()
+    expect(closePrincipalState).toHaveBeenCalledOnce()
   })
 })
 

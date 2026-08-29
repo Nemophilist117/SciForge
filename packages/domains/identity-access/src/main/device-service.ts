@@ -83,6 +83,11 @@ const DEVICE_KEY_SECRET = { kind: 'device-key' } as const
 
 export type DesktopDeviceStatusListener = (status: DesktopDeviceStatus) => void
 
+export type ActiveCloudDeviceAuthority = Readonly<Pick<
+  Device,
+  'deviceId' | 'userId' | 'revision'
+>>
+
 export class DesktopDeviceService {
   readonly #identity: DesktopDeviceServiceOptions['identity']
   readonly #client: CloudIdentityClient
@@ -126,6 +131,19 @@ export class DesktopDeviceService {
 
   getStatus(): DesktopDeviceStatus {
     return this.#status
+  }
+
+  getActiveDeviceAuthority(): ActiveCloudDeviceAuthority | null {
+    const device = this.#currentDevice
+    if (!device || device.status !== 'active' || this.#status.state !== 'active' ||
+      this.#status.device.deviceId !== device.deviceId) {
+      return null
+    }
+    return Object.freeze({
+      deviceId: device.deviceId,
+      userId: device.userId,
+      revision: device.revision
+    })
   }
 
   listDevices(): readonly DesktopDeviceSummary[] {

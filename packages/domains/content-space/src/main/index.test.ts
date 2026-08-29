@@ -76,9 +76,9 @@ const FILE = Object.freeze({
 })
 const exactSignedUrl = 'https://provider.invalid/portal?sig=a%2Bb&token=opaque%2Fvalue'
 const principal: PrincipalSnapshot = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'content-space-main-test-device',
   identityVersion: 1
 })
@@ -169,6 +169,42 @@ describe('Content Space main composition', () => {
       }]
     }))
     expect(createProvider).not.toHaveBeenCalled()
+  })
+
+  it('keeps Cloud transport lazy and exposes one strict explicit Provider Principal sync action', async () => {
+    const acquire = vi.fn(() => {
+      throw new Error('Cloud transport must stay lazy before explicit synchronization.')
+    })
+    const definitions = await activateDefinitions(
+      createDomainMainEntry(mainHost({
+        internalServices: Object.freeze({ register: vi.fn(), acquire })
+      })).contributions,
+      contributionHost(providerContributions(() => providerFixture()))
+    )
+    const sync = definition(definitions, CONTENT_SPACE_CAPABILITY_IDS.syncProviderPrincipal)
+
+    expect(acquire).not.toHaveBeenCalled()
+    expect(sync).toMatchObject({
+      id: 'content-space.sync-provider-principal',
+      audiences: ['ui'],
+      scope: 'global',
+      effect: 'external-write',
+      approval: 'confirmation',
+      concurrency: { revision: 'none', idempotency: 'required' }
+    })
+    expect(sync.inputSchema.safeParse({
+      providerInstanceRef: PROVIDER_INSTANCE_REF
+    }).success).toBe(true)
+    expect(sync.inputSchema.safeParse({
+      providerInstanceRef: PROVIDER_INSTANCE_REF,
+      userId: 'usr_RendererMustNotChoose1'
+    }).success).toBe(false)
+
+    await definition(
+      definitions,
+      CONTENT_SPACE_CAPABILITY_IDS.listProviderInstances
+    ).handler({}, capabilityContext())
+    expect(acquire).not.toHaveBeenCalled()
   })
 
   it('contributes provider-owned transfer, recovery-observation, and provisioning grants', async () => {
@@ -1468,6 +1504,9 @@ describe('Content Space main composition', () => {
       [CONTENT_SPACE_CAPABILITY_IDS.systemDownload, 'workspace-write'],
       [CONTENT_SPACE_CAPABILITY_IDS.systemUploadNew, 'external-write']
     ])
+    const approvedGlobalWriteIds = new Set<string>([
+      CONTENT_SPACE_CAPABILITY_IDS.syncProviderPrincipal
+    ])
     for (const capability of definitions) {
       if (confirmedWriteIds.has(capability.id)) {
         expect(capability).toMatchObject({
@@ -1501,6 +1540,14 @@ describe('Content Space main composition', () => {
           effect: systemWriteIds.get(capability.id),
           approval: 'none',
           concurrency: { idempotency: 'required' }
+        })
+      } else if (approvedGlobalWriteIds.has(capability.id)) {
+        expect(capability).toMatchObject({
+          audiences: ['ui'],
+          scope: 'global',
+          effect: 'external-write',
+          approval: 'confirmation',
+          concurrency: { revision: 'none', idempotency: 'required' }
         })
       } else {
         expect(capability.effect).toBe('read')

@@ -10,10 +10,10 @@ import {
 } from './principal.js'
 
 const principal = {
-  authority: 'sciforge.identity-access',
-  subject: 'usr_local-alice.01',
-  assurance: 'local-selection' as const,
-  deviceId: 'installation-01',
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser000001',
+  assurance: 'cloud-authenticated' as const,
+  deviceId: 'dev_CloudDevice0001',
   identityVersion: 7
 }
 
@@ -65,9 +65,9 @@ describe('Principal contracts', () => {
   it('compares every authorization-relevant Principal field', () => {
     assert.equal(samePrincipalSnapshot(principal, { ...principal }), true)
     assert.equal(samePrincipalSnapshot(principal, { ...principal, authority: 'remote.example' }), false)
-    assert.equal(samePrincipalSnapshot(principal, { ...principal, subject: 'usr_local-bob' }), false)
+    assert.equal(samePrincipalSnapshot(principal, { ...principal, subject: 'usr_CloudUser000002' }), false)
     assert.equal(samePrincipalSnapshot(principal, { ...principal, identityVersion: 8 }), false)
-    assert.equal(samePrincipalSnapshot(principal, { ...principal, deviceId: 'installation-02' }), false)
+    assert.equal(samePrincipalSnapshot(principal, { ...principal, deviceId: 'dev_CloudDevice0002' }), false)
     assert.equal(samePrincipalSnapshot(undefined, undefined), true)
     assert.equal(samePrincipalSnapshot(principal, undefined), false)
   })

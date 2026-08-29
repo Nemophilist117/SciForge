@@ -21,9 +21,9 @@ import { createOpenContentContentSpaceProvider } from './provider.js'
 
 const OPENCONTENT_PROVIDER_INSTANCE_REF = 'test-opencontent-provider'
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
-  subject: 'local-account-a',
-  assurance: 'local-selection' as const,
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser00001',
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'test-device',
   identityVersion: 1
 })

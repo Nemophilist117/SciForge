@@ -307,13 +307,14 @@ export function OpenContentEnrollment({
               <Check />
             </span>
             <div>
-              <h3>Account connected</h3>
+              <h3>OpenContent · 已登录</h3>
               <p>Connected on this device.</p>
             </div>
           </div>
 
           <p className="opencontent-enrollment__privacy">
-            This connection belongs to the current Local Account on this device.
+            This Content Space Provider connection is bound to the current signed-in SciForge user
+            on this device.
           </p>
 
           {disconnectControl}
@@ -382,7 +383,7 @@ function EnrollmentAction({
           <LockKeyhole />
         </span>
         <div>
-          <h3>{reconnecting ? 'Reconnect OpenContent' : 'Connect OpenContent'}</h3>
+          <h3>{reconnecting ? 'OpenContent · 登录已过期' : 'OpenContent · 未登录'}</h3>
           <p>
             {reconnecting
               ? 'Re-authorize the account already linked to this source.'
@@ -444,7 +445,9 @@ function EnrollmentAction({
         </label>
 
         <p id={privacyId} className="opencontent-enrollment__privacy">
-          These credentials are used once to connect. SciForge stores only the encrypted Session Token for this Local Account on this device.
+          These credentials are used once to connect. SciForge stores only an encrypted Session
+          Token bound to the current signed-in SciForge user, this device, and this Content Space
+          Provider instance.
         </p>
 
         {notice ? (

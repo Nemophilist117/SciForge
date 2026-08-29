@@ -16,9 +16,9 @@ const OPENCONTENT_PROVIDER_INSTANCE_REF = 'opencontent-edoc2-demo' as const
 const OPENCONTENT_SESSION_CONNECTION_ID = 'opencontent-session' as const
 
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
-  subject: 'local-account-a',
-  assurance: 'local-selection' as const,
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser00001',
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'test-device',
   identityVersion: 1
 })
@@ -433,7 +433,7 @@ describe('OpenContent connection service', () => {
       credentials: enrollmentCredentials(),
       assertPrincipalCurrent: () => undefined
     })
-    const otherPrincipal = Object.freeze({ ...principal, subject: 'local-account-b' })
+    const otherPrincipal = Object.freeze({ ...principal, subject: 'usr_CloudUser00002' })
 
     await expect(service.status({
       principal: otherPrincipal,

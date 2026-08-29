@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CloudIdentitySnapshot } from '../contract.js'
 import { CloudIdentitySection } from './CloudIdentitySection.js'
-import { IdentityAccountOverlay } from './IdentityAccountOverlay.js'
+import { IdentityOverlay } from './IdentityOverlay.js'
 import type {
   IdentityProjectionSnapshot,
   IdentityRendererProjection
@@ -33,36 +33,30 @@ describe('CloudIdentitySection', () => {
     container = null
   })
 
-  it('requires a selected Local Account before browser login', async () => {
-    const projection = projectionFixture(snapshotWith(signedOutCloud()))
+  it('allows browser login directly while signed out', async () => {
+    const loginCloud = vi.fn(async () => undefined)
+    const projection = projectionFixture(snapshotWith(signedOutCloud()), { loginCloud })
 
     await act(async () => {
       root = createRoot(container!)
-      root.render(createElement(CloudIdentitySection, {
-        projection,
-        localAccountSelected: false
-      }))
+      root.render(createElement(CloudIdentitySection, { projection }))
     })
 
     const login = Array.from(container!.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('cloudSignIn'))
     expect(login).toBeDefined()
-    expect(login?.disabled).toBe(true)
-    expect(container?.textContent).toContain('cloudLocalAccountRequired')
+    expect(login?.disabled).toBe(false)
+    await act(async () => login?.click())
+    expect(loginCloud).toHaveBeenCalledOnce()
   })
 
   it('revokes the active Device only through the domain projection', async () => {
     const revokeCloudDevice = vi.fn(async () => undefined)
-    const projection = projectionFixture(snapshotWith(activeCloud()), {
-      revokeCloudDevice
-    })
+    const projection = projectionFixture(snapshotWith(activeCloud()), { revokeCloudDevice })
 
     await act(async () => {
       root = createRoot(container!)
-      root.render(createElement(CloudIdentitySection, {
-        projection,
-        localAccountSelected: true
-      }))
+      root.render(createElement(CloudIdentitySection, { projection }))
     })
     const revoke = Array.from(container!.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('cloudRevokeDevice'))
@@ -84,9 +78,8 @@ describe('CloudIdentitySection', () => {
 
     await act(async () => {
       root = createRoot(container!)
-      root.render(createElement(IdentityAccountOverlay, {
+      root.render(createElement(IdentityOverlay, {
         projection,
-        firstRun: false,
         onClose: vi.fn()
       }))
     })
@@ -104,9 +97,8 @@ describe('CloudIdentitySection', () => {
     })
     await act(async () => {
       root = createRoot(container!)
-      root.render(createElement(IdentityAccountOverlay, {
+      root.render(createElement(IdentityOverlay, {
         projection: transportProjection,
-        firstRun: false,
         onClose: vi.fn()
       }))
     })
@@ -119,9 +111,6 @@ describe('CloudIdentitySection', () => {
 
 function snapshotWith(cloud: CloudIdentitySnapshot): IdentityProjectionSnapshot {
   return {
-    loading: false,
-    state: null,
-    accounts: [],
     cloud,
     cloudResource: {
       token: `cap_${'a'.repeat(24)}`,
@@ -141,12 +130,6 @@ function projectionFixture(
     getSnapshot: () => snapshot,
     subscribe: () => () => undefined,
     load: vi.fn(async () => snapshot),
-    createAccount: vi.fn(),
-    selectAccount: vi.fn(),
-    renameAccount: vi.fn(),
-    exitAccount: vi.fn(),
-    dismissFirstPrompt: vi.fn(),
-    backupAndReset: vi.fn(),
     loginCloud: vi.fn(),
     reauthenticateCloud: vi.fn(),
     logoutCloud: vi.fn(),

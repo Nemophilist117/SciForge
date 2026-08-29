@@ -668,7 +668,7 @@ function exactObservationReceipt() {
     execution: {
       callerId: 'domain:project-coordinator',
       principal: {
-        authority: 'sciforge.identity-access',
+        authority: 'sciforge-cloud',
         subject: ownerUserId,
         assurance: 'cloud-authenticated',
         deviceId: 'dev_RecoveryOwner01',
@@ -761,7 +761,8 @@ function cloudTransport(
       state: 'ready',
       baseUrl: 'https://cloud.invalid/',
       userId: ownerUserId,
-      deviceId: 'dev_RecoveryOwner01'
+      deviceId: 'dev_RecoveryOwner01',
+      deviceEntityRevision: 1
     }),
     execute: async ({ payload }) => execute(payload)
   }

@@ -35,9 +35,9 @@ const DOCUMENT = Object.freeze({
   reference: FILE
 })
 const PRINCIPAL = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: '123e4567-e89b-42d3-a456-426614174000',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'native-document-provider-adapter-test',
   identityVersion: 1
 })

@@ -198,7 +198,8 @@ test('the Collaboration entry publishes one Coordinator command service backed b
       state: 'ready',
       baseUrl: 'https://collaboration.example.test',
       userId: TEST_IDS.userId,
-      deviceId: TEST_IDS.deviceId
+      deviceId: TEST_IDS.deviceId,
+      deviceEntityRevision: 1
     }),
     execute: async (request) => ({
       contractVersion: 1,

@@ -431,7 +431,8 @@ test('Plan confirmation keeps the Project paused until the canonical workflow ac
       state: 'ready',
       baseUrl: 'https://cloud.run0.invalid/',
       userId: 'usr_Owner0000001',
-      deviceId: 'dev_Device0000001'
+      deviceId: 'dev_Device0000001',
+      deviceEntityRevision: 1
     }),
     execute: async (request) => {
       userCommands.push(request.payload)

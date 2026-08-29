@@ -16,8 +16,9 @@ Content Space.
   the same Connector facade before settings, credentials, network, or process
   work.
 
-The binding remains owned by the Connector and scoped to the current Local Account, this device,
-and the selected Provider Instance. The external OpenContent account is not a SciForge identity.
+The binding remains owned by the Connector and scoped to the current signed-in SciForge Cloud
+Principal, this device, and the selected Provider Instance. The external OpenContent account is
+only the current Content Space Provider identity; it is not a SciForge identity.
 
 ## Current readiness
 

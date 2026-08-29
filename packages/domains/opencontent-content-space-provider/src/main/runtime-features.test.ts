@@ -20,9 +20,9 @@ import { createOpenContentRuntimeFeatures } from './runtime-features.js'
 
 const OPENCONTENT_PROVIDER_INSTANCE_REF = 'test-opencontent-provider'
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: 'content-owner',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'runtime-feature-no-assets-test',
   identityVersion: 1
 })

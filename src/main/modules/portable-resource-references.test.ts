@@ -47,9 +47,9 @@ const deniedConsumer = {
   moduleVersion: '1.0.0'
 }
 const principalA: PrincipalSnapshot = {
-  authority: 'local.identity',
+  authority: 'sciforge-cloud',
   subject: 'alice',
-  assurance: 'local-selection',
+  assurance: 'cloud-authenticated',
   deviceId: 'installation-alpha',
   identityVersion: 7
 }

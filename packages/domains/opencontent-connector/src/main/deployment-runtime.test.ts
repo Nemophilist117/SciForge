@@ -25,9 +25,9 @@ import { createDomainMainEntry } from './index.js'
 const OPENCONTENT_PROVIDER_INSTANCE_REF = 'opencontent-edoc2-demo' as const
 
 const principal = Object.freeze({
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: 'deployment-unavailable-user',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'deployment-unavailable-device',
   identityVersion: 1
 })

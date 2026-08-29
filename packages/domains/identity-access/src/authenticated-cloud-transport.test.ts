@@ -174,7 +174,8 @@ describe('authenticated Cloud transport contract', () => {
         state: 'ready',
         baseUrl: 'https://cloud.example.test',
         userId: 'usr_CloudUser000001',
-        deviceId: 'dev_CloudDevice0001'
+        deviceId: 'dev_CloudDevice0001',
+        deviceEntityRevision: 7
       }),
       execute: async (request) => ({
         contractVersion: 1,
@@ -191,8 +192,18 @@ describe('authenticated Cloud transport contract', () => {
       state: 'ready',
       baseUrl: 'https://cloud.example.test',
       userId: 'usr_CloudUser000001',
-      deviceId: 'dev_CloudDevice0001'
+      deviceId: 'dev_CloudDevice0001',
+      deviceEntityRevision: 7
     })
+    expect(() => defineAuthenticatedCloudTransport({
+      status: () => ({
+        state: 'ready',
+        baseUrl: 'https://cloud.example.test',
+        userId: 'usr_CloudUser000001',
+        deviceId: 'dev_CloudDevice0001'
+      } as never),
+      execute: transport.execute
+    }).status()).toThrow()
     await expect(transport.execute({
       contractVersion: 1,
       operationId: AUTHENTICATED_CLOUD_COMMAND_OPERATION_ID,
@@ -204,7 +215,8 @@ describe('authenticated Cloud transport contract', () => {
         state: 'ready',
         baseUrl: 'https://cloud.example.test',
         userId: 'usr_CloudUser000001',
-        deviceId: 'dev_CloudDevice0001'
+        deviceId: 'dev_CloudDevice0001',
+        deviceEntityRevision: 7
       }),
       execute: async () => ({
         contractVersion: 1,

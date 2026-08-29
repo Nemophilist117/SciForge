@@ -39,9 +39,9 @@ const uiCaller = {
 }
 
 const principalA = {
-  authority: 'sciforge.identity-access',
+  authority: 'sciforge-cloud',
   subject: 'person-a',
-  assurance: 'local-selection' as const,
+  assurance: 'cloud-authenticated' as const,
   deviceId: 'installation-1',
   identityVersion: 1
 }

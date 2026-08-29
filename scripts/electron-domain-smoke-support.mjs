@@ -1,5 +1,5 @@
 import { constants as fsConstants } from 'node:fs'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import {
   access,
@@ -20,16 +20,6 @@ import { CAPABILITY_BROKER_CONTRACT_VERSION } from '../src/shared/capability-bro
 
 const TEMPORARY_DIRECTORY_PREFIX = 'sciforge-electron-domain-smoke-'
 const DEFAULT_TIMEOUT_MS = 45_000
-export const IDENTITY_SMOKE_CAPABILITY_IDS = Object.freeze([
-  'identity.local.inspect',
-  'identity.local.list-accounts',
-  'identity.local.create-account',
-  'identity.local.select-account',
-  'identity.local.rename-account',
-  'identity.local.exit-account',
-  'identity.local.dismiss-first-prompt',
-  'identity.local.backup-and-reset'
-])
 export const CLOUD_IDENTITY_SMOKE_CAPABILITY_IDS = Object.freeze([
   'identity.cloud.inspect',
   'identity.cloud.login',
@@ -93,7 +83,6 @@ export const PROJECT_COORDINATOR_SMOKE_CAPABILITY_IDS = Object.freeze([
   'project-coordinator.project.complete'
 ])
 export const REQUIRED_CAPABILITY_IDS = Object.freeze([
-  ...IDENTITY_SMOKE_CAPABILITY_IDS,
   ...CLOUD_IDENTITY_SMOKE_CAPABILITY_IDS,
   ...CONTENT_SPACE_SMOKE_CAPABILITY_IDS,
   ...COLLABORATION_SMOKE_CAPABILITY_IDS,
@@ -151,15 +140,6 @@ const PROCESS_FAILURE_PATTERNS = Object.freeze([
   /render-process-gone/iu,
   /did-fail-load/iu
 ])
-
-export function createIdentitySmokeInvocationId(createUuid = randomUUID) {
-  const uuid = createUuid()
-  if (typeof uuid !== 'string' ||
-    !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(uuid)) {
-    throw new Error('Identity smoke invocation UUID is invalid.')
-  }
-  return `electron-smoke-identity-create-${uuid}`
-}
 
 export async function createSourceSmokeConfiguration(repositoryRoot) {
   const root = resolve(repositoryRoot)
@@ -360,7 +340,6 @@ export async function runElectronDomainSmoke({
       const result = await window.evaluate(smokeRendererWorkflow, {
         expectedContractVersion: CAPABILITY_BROKER_CONTRACT_VERSION,
         expectCloudConfigured: Boolean(expectedDeployment),
-        identityInvocationId: createIdentitySmokeInvocationId(),
         requiredCapabilityIds: REQUIRED_CAPABILITY_IDS,
         workspaceDirectory
       })
@@ -523,7 +502,6 @@ export function parseSmokeCliOptions(argv) {
 async function smokeRendererWorkflow({
   expectedContractVersion,
   expectCloudConfigured,
-  identityInvocationId,
   requiredCapabilityIds,
   workspaceDirectory
 }) {
@@ -538,19 +516,6 @@ async function smokeRendererWorkflow({
     requiredCapabilityIds
   })
   if (readiness.status !== 'ready') throw new Error(readiness.message)
-
-  const identityAccount = await api.capabilities.invoke({
-    request: {
-      actionId: 'identity.local.create-account',
-      invocationId: identityInvocationId,
-      input: { username: 'electron_smoke' }
-    }
-  })
-  if (identityAccount.actionId !== 'identity.local.create-account' ||
-    identityAccount.output?.status !== 'available' ||
-    identityAccount.output.currentAccount?.username !== 'electron_smoke') {
-    throw new Error('Identity did not create and select the isolated smoke account.')
-  }
 
   const cloudIdentity = await api.capabilities.invoke({
     request: { actionId: 'identity.cloud.inspect', input: {} }
@@ -804,8 +769,6 @@ async function smokeRendererWorkflow({
     version: await api.getAppVersion(),
     readiness: readiness.status,
     capabilityCount: readiness.availableCapabilityIds.length,
-    identityActionId: identityAccount.actionId,
-    identityAccountUsername: identityAccount.output.currentAccount.username,
     cloudIdentityActionId: cloudIdentity.actionId,
     cloudIdentityState: cloudSnapshot.identity.state,
     cloudDeviceState: cloudSnapshot.device.state,
@@ -866,10 +829,6 @@ async function readMainProcessDiagnostics(electronApp) {
 export function validateSmokeResult(result, { expectedDeployment, expectedRendererUrl }) {
   if (!result || typeof result !== 'object') throw new Error('Electron smoke returned no renderer result.')
   if (result.readiness !== 'ready') throw new Error(`Capability readiness was ${String(result.readiness)}.`)
-  if (result.identityActionId !== 'identity.local.create-account' ||
-    result.identityAccountUsername !== 'electron_smoke') {
-    throw new Error('Identity account creation did not establish the isolated smoke Principal.')
-  }
   if (result.cloudIdentityActionId !== 'identity.cloud.inspect' ||
     result.cloudIdentityState !== 'signed-out' || result.cloudDeviceState !== 'signed-out') {
     throw new Error('Cloud Identity pre-login state was not available through the capability path.')

@@ -106,6 +106,7 @@ export const contentSpaceDirectoryGroupReferenceSchema =
 
 export const CONTENT_SPACE_CAPABILITY_IDS = Object.freeze({
   listProviderInstances: 'content-space.list-provider-instances',
+  syncProviderPrincipal: 'content-space.sync-provider-principal',
   listAgentRootCandidates: 'content-space.list-agent-root-candidates',
   describeCapabilities: 'content-space.describe-capabilities',
   listContainers: 'content-space.list-containers',
@@ -665,6 +666,13 @@ export const contentSpaceProviderInstanceListSchema = z.object({
 export const contentSpaceProviderInstanceInputSchema = z.object({
   providerInstanceRef: providerInstanceRefSchema
 }).strict().readonly()
+export const contentSpaceProviderPrincipalSyncReceiptSchema = z.object({
+  providerInstanceRef: providerInstanceRefSchema,
+  status: z.literal('synchronized')
+}).strict().readonly()
+export type ContentSpaceProviderPrincipalSyncReceipt = z.infer<
+  typeof contentSpaceProviderPrincipalSyncReceiptSchema
+>
 export const contentSpaceListAgentRootCandidatesInputSchema = z.object({
   providerInstanceRef: providerInstanceRefSchema,
   scope: z.enum(['personal', 'shared']),
@@ -1037,6 +1045,9 @@ export const contentSpaceObserveImmutableVersionInputSchema = z.object({
 
 export const contentSpaceProviderInstanceListResultSchema = contentSpaceResultSchema(
   contentSpaceProviderInstanceListSchema
+)
+export const contentSpaceProviderPrincipalSyncResultSchema = contentSpaceResultSchema(
+  contentSpaceProviderPrincipalSyncReceiptSchema
 )
 export const contentSpaceAgentRootCandidatePageResultSchema = contentSpaceResultSchema(
   contentSpaceAgentRootCandidatePageSchema

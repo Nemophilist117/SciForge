@@ -26,6 +26,7 @@ import {
   contentSpacePortableResourceStateSchema,
   contentSpaceProviderInstanceInputSchema,
   contentSpaceProviderInstanceListResultSchema,
+  contentSpaceProviderPrincipalSyncResultSchema,
   contentSpaceResolvePortalTargetInputSchema,
   contentSpaceUploadNewInputSchema,
   createFolderResultSchema,
@@ -48,6 +49,12 @@ export const contentSpaceCapabilityContracts = Object.freeze({
     'read',
     emptyInputSchema,
     contentSpaceProviderInstanceListResultSchema
+  ),
+  syncProviderPrincipal: contract(
+    CONTENT_SPACE_CAPABILITY_IDS.syncProviderPrincipal,
+    'external-write',
+    contentSpaceProviderInstanceInputSchema,
+    contentSpaceProviderPrincipalSyncResultSchema
   ),
   describeCapabilities: contract(
     CONTENT_SPACE_CAPABILITY_IDS.describeCapabilities,
@@ -128,6 +135,10 @@ export type ContentSpaceCapabilityClient = Readonly<{
   listProviderInstances(options?: ContentSpaceReadOptions): Promise<z.infer<
     typeof contentSpaceProviderInstanceListResultSchema
   >>
+  syncProviderPrincipal(
+    providerInstanceRef: string,
+    options: ContentSpaceMutationOptions
+  ): Promise<z.infer<typeof contentSpaceProviderPrincipalSyncResultSchema>>
   describeCapabilities(providerInstanceRef: string, options?: ContentSpaceReadOptions): Promise<
     ContentSpaceResult<Readonly<{ items: readonly ContentSpaceAdmittedCapabilityState[] }>>
   >
@@ -160,6 +171,11 @@ export function createContentSpaceCapabilityClient(
     listProviderInstances: (options) => invoker.invoke(
       contentSpaceCapabilityContracts.listProviderInstances,
       {},
+      options
+    ),
+    syncProviderPrincipal: (providerInstanceRef, options) => invoker.invoke(
+      contentSpaceCapabilityContracts.syncProviderPrincipal,
+      { providerInstanceRef },
       options
     ),
     describeCapabilities: (providerInstanceRef, options) => invoker.invoke(
