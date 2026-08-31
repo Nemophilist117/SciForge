@@ -170,9 +170,9 @@ test('canonical resource identities separate delimiter collisions and workspaces
     workspaceId: '/repo',
     principalContextVersion: 9,
     principal: {
-      authority: 'local.sciforge',
+      authority: 'sciforge-cloud',
       subject: 'usr_alice',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'device-1',
       identityVersion: 9
     }

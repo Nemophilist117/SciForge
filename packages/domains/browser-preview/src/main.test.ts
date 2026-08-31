@@ -282,9 +282,9 @@ test('observer memoization does not alias distinct browser resource identities',
     workspaceId: '/workspace',
     principalContextVersion: 7,
     principal: {
-      authority: 'local.sciforge',
+      authority: 'sciforge-cloud',
       subject: 'usr_alice',
-      assurance: 'local-selection' as const,
+      assurance: 'cloud-authenticated' as const,
       deviceId: 'device-1',
       identityVersion: 7
     }

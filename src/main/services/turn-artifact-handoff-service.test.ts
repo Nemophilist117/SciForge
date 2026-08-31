@@ -28,9 +28,9 @@ import {
 const roots: string[] = []
 
 const HOST_PRINCIPAL: PrincipalSnapshot = Object.freeze({
-  authority: 'identity-access.local',
+  authority: 'sciforge-cloud',
   subject: 'user-a',
-  assurance: 'local-selection',
+  assurance: 'cloud-authenticated',
   deviceId: 'device-a',
   identityVersion: 7
 })
