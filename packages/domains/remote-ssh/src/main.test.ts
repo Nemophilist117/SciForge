@@ -576,9 +576,9 @@ describe('Remote SSH main domain entry', () => {
       workspaceId: '/workspace',
       principalContextVersion: 1,
       principal: {
-        authority: 'local',
+        authority: 'sciforge-cloud',
         subject: 'user-a',
-        assurance: 'local-selection',
+        assurance: 'cloud-authenticated',
         deviceId: 'device-a',
         identityVersion: 1
       }
@@ -588,9 +588,9 @@ describe('Remote SSH main domain entry', () => {
       workspaceId: '/workspace',
       principalContextVersion: 2,
       principal: {
-        authority: 'local',
+        authority: 'sciforge-cloud',
         subject: 'user-b',
-        assurance: 'local-selection',
+        assurance: 'cloud-authenticated',
         deviceId: 'device-a',
         identityVersion: 2
       }

@@ -28,10 +28,10 @@ import type {
 } from './host-resource-grants'
 
 const principalV1 = Object.freeze({
-  authority: 'sciforge.local-identity',
-  subject: 'person-1',
-  assurance: 'local-selection' as const,
-  deviceId: 'installation-1',
+  authority: 'sciforge-cloud',
+  subject: 'usr_CloudUser000001',
+  assurance: 'cloud-authenticated' as const,
+  deviceId: 'dev_CloudDevice0001',
   identityVersion: 1
 })
 
@@ -41,8 +41,8 @@ const systemWorkspaceTransferAuthorization = Object.freeze({
   requiredSystemCapabilityGrant: systemWorkspaceTransferGrant
 })
 const systemPrincipalSnapshotDigest = createHash('sha256').update(
-  '{"assurance":"local-selection","authority":"sciforge.local-identity",' +
-  '"deviceId":"installation-1","identityVersion":1,"subject":"person-1"}'
+  '{"assurance":"cloud-authenticated","authority":"sciforge-cloud",' +
+  '"deviceId":"dev_CloudDevice0001","identityVersion":1,"subject":"usr_CloudUser000001"}'
 ).digest('hex')
 const systemExecutionContextDigest = createHash('sha256').update(
   '{"contractVersion":1,"executionId":"execution-1",' +

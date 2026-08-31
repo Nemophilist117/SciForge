@@ -5085,9 +5085,9 @@ describe('AgentRuntimeHost', () => {
 
   it('captures one Host Principal at dispatch and overwrites adapter attribution through materialization', async () => {
     const principalA: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'user-a',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 3
     })
@@ -5255,9 +5255,9 @@ describe('AgentRuntimeHost', () => {
 
   it('binds and removes one exact Host-originated tool Principal lease', async () => {
     const principal: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'smoke-user',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 7
     })
@@ -5295,9 +5295,9 @@ describe('AgentRuntimeHost', () => {
 
   it('captures Principal after the durable predecessor flush, not when a turn is queued', async () => {
     const principalA: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'user-a',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 1
     })
@@ -5349,9 +5349,9 @@ describe('AgentRuntimeHost', () => {
 
   it('retains an exact signed-out context lease and detects sign-in/sign-out ABA', async () => {
     const signedInPrincipal: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'user-a',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 2
     })
@@ -5402,21 +5402,21 @@ describe('AgentRuntimeHost', () => {
     await host.dispose()
   })
 
-  it('rejects a durable start when the Principal assurance changes', async () => {
-    const localPrincipal: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+  it('rejects a durable start when the Principal changes', async () => {
+    const principalBeforeChange: PrincipalSnapshot = Object.freeze({
+      authority: 'sciforge-cloud',
       subject: 'user-a',
-      assurance: 'local-selection',
-      deviceId: 'installation-a',
+      assurance: 'cloud-authenticated',
+      deviceId: 'device-a',
       identityVersion: 1
     })
-    const elevatedPrincipal: PrincipalSnapshot = Object.freeze({
-      ...localPrincipal,
-      assurance: 'cloud-authenticated',
+    const principalAfterChange: PrincipalSnapshot = Object.freeze({
+      ...principalBeforeChange,
+      deviceId: 'device-b'
     })
     let liveContext: PrincipalContextSnapshot = Object.freeze({
-      identityVersion: localPrincipal.identityVersion,
-      principal: localPrincipal
+      identityVersion: principalBeforeChange.identityVersion,
+      principal: principalBeforeChange
     })
     const codex = fakeAdapter('codex', {
       id: 'codex-thread',
@@ -5433,20 +5433,20 @@ describe('AgentRuntimeHost', () => {
     })
     host.subscribeRequiredBeforeTurn(async (event) => {
       expect(event.principalContext).toEqual({
-        identityVersion: localPrincipal.identityVersion,
-        principal: localPrincipal
+        identityVersion: principalBeforeChange.identityVersion,
+        principal: principalBeforeChange
       })
       liveContext = Object.freeze({
-        identityVersion: elevatedPrincipal.identityVersion,
-        principal: elevatedPrincipal
+        identityVersion: principalAfterChange.identityVersion,
+        principal: principalAfterChange
       })
     })
 
     await expect(host.startTurn({
       runtimeId: 'codex',
       threadId: 'codex-thread',
-      text: 'Do not dispatch after assurance changes.',
-      clientDirectiveId: 'directive-assurance-transition'
+      text: 'Do not dispatch after the Principal changes.',
+      clientDirectiveId: 'directive-principal-transition'
     })).rejects.toMatchObject({
       name: 'AgentRuntimeTurnPreflightError',
       code: 'runtime_turn_principal_changed',
@@ -5700,16 +5700,16 @@ describe('AgentRuntimeHost', () => {
 
   it('recovers a durable watch with its original Principal instead of the current identity', async () => {
     const original: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'user-a',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 3
     })
     const current: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'user-b',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 4
     })
@@ -5912,9 +5912,9 @@ describe('AgentRuntimeHost', () => {
 
   it('bounds settled Principal history without evicting an active turn binding', async () => {
     const principal: PrincipalSnapshot = Object.freeze({
-      authority: 'identity-access.local',
+      authority: 'sciforge-cloud',
       subject: 'long-running-user',
-      assurance: 'local-selection',
+      assurance: 'cloud-authenticated',
       deviceId: 'device-a',
       identityVersion: 1
     })
